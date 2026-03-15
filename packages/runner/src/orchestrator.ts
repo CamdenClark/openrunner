@@ -230,18 +230,25 @@ async function runJobSteps(
   const CONTAINER_SOURCE = "/mnt/source";
   const isDocker = !!runnerImage;
 
-  // Override host-specific paths for Docker execution
+  // When running in Docker, override env and runner context for the target platform
   const effectiveEnv = isDocker
     ? {
         ...jobEnv,
         RUNNER_TEMP: "/tmp/runner",
-        RUNNER_TOOL_CACHE: "/tmp/runner/tool-cache",
+        RUNNER_TOOL_CACHE: "/opt/hostedtoolcache",
         GITHUB_EVENT_PATH: "",
       }
     : jobEnv;
 
   const effectiveRunnerCtx = isDocker
-    ? { ...runnerCtx, temp: "/tmp/runner", tool_cache: "/tmp/runner/tool-cache" }
+    ? {
+        name: "openrunner",
+        os: "Linux",
+        arch: process.arch === "arm64" ? "ARM64" : "X64",
+        temp: "/tmp/runner",
+        tool_cache: "/opt/hostedtoolcache",
+        debug: runnerCtx.debug ?? "0",
+      }
     : runnerCtx;
 
   // Set up Docker network and services on the host (orchestrator-managed)

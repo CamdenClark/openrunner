@@ -66,6 +66,11 @@ async function main(): Promise<void> {
   try {
     await cloneSource(input.sourceDir, workspace);
 
+    // Ensure runner temp and tool cache dirs exist
+    const { mkdirSync } = await import("node:fs");
+    if (input.env.RUNNER_TEMP) mkdirSync(input.env.RUNNER_TEMP, { recursive: true });
+    if (input.env.RUNNER_TOOL_CACHE) mkdirSync(input.env.RUNNER_TOOL_CACHE, { recursive: true });
+
     const jobGithubCtx = withWorkspace(input.githubContext, workspace);
     const rawJobEnv = {
       ...input.env,

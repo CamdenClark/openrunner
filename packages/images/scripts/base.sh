@@ -24,3 +24,7 @@ locale-gen en_US.UTF-8
 # Create runner user
 useradd -m -s /bin/bash runner
 echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/runner
+
+# Create hostedtoolcache directory (expected by GitHub Actions setup-* actions)
+mkdir -p /opt/hostedtoolcache
+chown runner:runner /opt/hostedtoolcache
