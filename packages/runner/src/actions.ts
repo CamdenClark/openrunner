@@ -15,9 +15,16 @@ export interface ActionMeta {
   outputs?: Record<string, { description?: string }>;
   runs: {
     using: string; // "node12", "node16", "node20", "composite", "docker"
-    main: string;  // entrypoint file
+    main?: string;  // entrypoint file (JS actions)
     pre?: string;
     post?: string;
+    // Docker action fields
+    image?: string; // "Dockerfile" or "docker://image:tag"
+    entrypoint?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    "pre-entrypoint"?: string;
+    "post-entrypoint"?: string;
   };
 }
 

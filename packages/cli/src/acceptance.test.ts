@@ -220,4 +220,5 @@ describe("acceptance", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("service reachable on host");
   });
+
 });

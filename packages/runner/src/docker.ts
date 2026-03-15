@@ -50,7 +50,7 @@ function resolveShellTemplate(
 /**
  * Helper to run a docker command and return stdout, or throw on failure.
  */
-async function dockerRun(
+export async function dockerRun(
   args: string[],
   opts?: { stdin?: string }
 ): Promise<string> {

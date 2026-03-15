@@ -5,6 +5,7 @@ import {
   readActionMeta,
   installActionDeps,
 } from "./actions";
+import { dockerRun } from "./docker";
 
 /**
  * Shell command templates matching GitHub Actions behavior.
@@ -199,9 +200,13 @@ export class HostExecutor implements Executor {
     const meta = await readActionMeta(actionDir);
 
     const using = meta.runs.using;
+    if (using === "docker") {
+      return this.runDockerAction(step, env, actionDir, meta);
+    }
+
     if (!using.startsWith("node") && using !== "bun") {
       throw new Error(
-        `Unsupported action type: ${using}. Only JavaScript (node*/bun) actions are supported.`
+        `Unsupported action type: ${using}. Only JavaScript (node*/bun) and Docker actions are supported.`
       );
     }
 
@@ -291,6 +296,155 @@ export class HostExecutor implements Executor {
     const envVars = await parseFileCommands(envFile);
     const pathAdditions = await parsePathFile(pathFile);
 
+    await Promise.allSettled([
+      Bun.file(outputFile).delete(),
+      Bun.file(envFile).delete(),
+      Bun.file(pathFile).delete(),
+    ]);
+
+    return { exitCode, stdout, stderr, outputs, envVars, pathAdditions };
+  }
+
+  /**
+   * Execute a Docker-based action (runs.using: 'docker').
+   * Builds or pulls the image, then runs it with workspace mount and INPUT_ env vars.
+   */
+  private async runDockerAction(
+    step: Step,
+    env: Record<string, string>,
+    actionDir: string,
+    meta: import("./actions").ActionMeta
+  ): Promise<StepResult> {
+    const image = meta.runs.image;
+    if (!image) {
+      throw new Error(`Docker action ${step.uses} has no runs.image`);
+    }
+
+    // Resolve the Docker image
+    let imageTag: string;
+    if (image === "Dockerfile" || image.startsWith("Dockerfile.")) {
+      // Build from Dockerfile in the action directory
+      imageTag = `openrunner-action-${crypto.randomUUID()}`;
+      console.log(`\x1b[2m│   Building Docker image from ${image}...\x1b[0m`);
+      await dockerRun([
+        "docker", "build", "-t", imageTag, "-f", join(actionDir, image), actionDir,
+      ]);
+    } else if (image.startsWith("docker://")) {
+      // Pre-built image reference
+      imageTag = image.slice("docker://".length);
+      console.log(`\x1b[2m│   Pulling Docker image ${imageTag}...\x1b[0m`);
+      await dockerRun(["docker", "pull", imageTag]);
+    } else {
+      throw new Error(
+        `Invalid Docker action image: ${image}. Must be 'Dockerfile' or 'docker://image:tag'`
+      );
+    }
+
+    // Set up temp files for workflow commands
+    const tmpDir = Bun.env.TMPDIR ?? "/tmp";
+    const uuid = crypto.randomUUID();
+    const outputFile = join(tmpDir, `openrunner-output-${uuid}`);
+    const envFile = join(tmpDir, `openrunner-env-${uuid}`);
+    const pathFile = join(tmpDir, `openrunner-path-${uuid}`);
+
+    await Promise.all([
+      Bun.write(outputFile, ""),
+      Bun.write(envFile, ""),
+      Bun.write(pathFile, ""),
+    ]);
+
+    // Build INPUT_ env vars from action defaults + `with:` overrides
+    const inputEnv: Record<string, string> = {};
+    if (meta.inputs) {
+      for (const [key, def] of Object.entries(meta.inputs)) {
+        if (def.default !== undefined) {
+          let value = String(def.default);
+          if (this.interpolate && value.includes("${{")) {
+            value = this.interpolate(value);
+          }
+          inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] = value;
+        }
+      }
+    }
+    if (step.with) {
+      for (const [key, value] of Object.entries(step.with)) {
+        inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
+          String(value);
+      }
+    }
+
+    // Build docker run command
+    const runArgs = ["docker", "run", "--rm"];
+
+    // Mount workspace
+    runArgs.push("-v", `${this.workingDirectory}:/github/workspace`);
+    runArgs.push("-w", "/github/workspace");
+
+    // Mount temp files for file commands
+    runArgs.push("-v", `${outputFile}:/github/file_commands/output`);
+    runArgs.push("-v", `${envFile}:/github/file_commands/env`);
+    runArgs.push("-v", `${pathFile}:/github/file_commands/path`);
+
+    // Set up all environment variables
+    const stepEnv: Record<string, string> = {
+      ...env,
+      ...(step.env ?? {}),
+      ...(meta.runs.env ?? {}),
+      ...inputEnv,
+      GITHUB_OUTPUT: "/github/file_commands/output",
+      GITHUB_ENV: "/github/file_commands/env",
+      GITHUB_PATH: "/github/file_commands/path",
+      GITHUB_WORKSPACE: "/github/workspace",
+      GITHUB_ACTION_PATH: "/github/action",
+    };
+
+    for (const [key, value] of Object.entries(stepEnv)) {
+      runArgs.push("-e", `${key}=${value}`);
+    }
+
+    // Mount action directory for access to action files
+    runArgs.push("-v", `${actionDir}:/github/action`);
+
+    // Override entrypoint if specified
+    if (meta.runs.entrypoint) {
+      runArgs.push("--entrypoint", meta.runs.entrypoint);
+    }
+
+    runArgs.push(imageTag);
+
+    // Append args if specified
+    if (meta.runs.args) {
+      const interpolatedArgs = meta.runs.args.map((arg) => {
+        if (this.interpolate && arg.includes("${{")) {
+          return this.interpolate(arg);
+        }
+        return arg;
+      });
+      runArgs.push(...interpolatedArgs);
+    }
+
+    const proc = Bun.spawn(runArgs, {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const timeoutMs = (step["timeout-minutes"] ?? 360) * 60 * 1000;
+    const timeout = setTimeout(() => proc.kill(), timeoutMs);
+
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    const exitCode = await proc.exited;
+    clearTimeout(timeout);
+
+    // Parse file commands
+    const outputs = await parseFileCommands(outputFile);
+    const envVars = await parseFileCommands(envFile);
+    const pathAdditions = await parsePathFile(pathFile);
+
+    // Clean up temp files
     await Promise.allSettled([
       Bun.file(outputFile).delete(),
       Bun.file(envFile).delete(),
