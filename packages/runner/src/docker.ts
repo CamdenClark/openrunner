@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { Step } from "./parser";
-import type { NormalizedContainer } from "./parser";
+import type { NormalizedContainer, ServiceConfig } from "./parser";
 import type { Executor, StepResult, HostExecutorOptions } from "./executor";
 
 const CONTAINER_WORKSPACE = "/github/workspace";
@@ -48,6 +48,62 @@ function resolveShellTemplate(
 }
 
 /**
+ * Helper to run a docker command and return stdout, or throw on failure.
+ */
+async function dockerRun(
+  args: string[],
+  opts?: { stdin?: string }
+): Promise<string> {
+  const proc = Bun.spawn(args, {
+    stdin: opts?.stdin ? "pipe" : undefined,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (opts?.stdin) {
+    proc.stdin!.write(opts.stdin);
+    proc.stdin!.end();
+  }
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    throw new Error(`Docker command failed: ${args.join(" ")}\n${stderr}`);
+  }
+  return stdout.trim();
+}
+
+/**
+ * Manages a Docker network for connecting job container and service containers.
+ */
+export class DockerNetwork {
+  private networkId: string | null = null;
+  readonly name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
+
+  async create(): Promise<void> {
+    this.networkId = await dockerRun([
+      "docker", "network", "create", this.name,
+    ]);
+  }
+
+  async remove(): Promise<void> {
+    if (this.networkId) {
+      const proc = Bun.spawn(
+        ["docker", "network", "rm", this.name],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      await proc.exited;
+      this.networkId = null;
+    }
+  }
+}
+
+/**
  * Manages Docker container lifecycle for job execution.
  */
 export class DockerContainer {
@@ -60,12 +116,17 @@ export class DockerContainer {
     this.hostWorkspace = hostWorkspace;
   }
 
-  async start(jobEnv: Record<string, string>): Promise<void> {
+  async start(opts?: { network?: string }): Promise<void> {
     const args = ["docker", "create"];
 
     // Mount workspace
     args.push("-v", `${this.hostWorkspace}:${CONTAINER_WORKSPACE}`);
     args.push("-w", CONTAINER_WORKSPACE);
+
+    // Attach to network
+    if (opts?.network) {
+      args.push("--network", opts.network);
+    }
 
     // Container env
     if (this.containerConfig.env) {
@@ -98,61 +159,20 @@ export class DockerContainer {
 
     // Handle credentials-based login if specified
     if (this.containerConfig.credentials) {
-      const loginProc = Bun.spawn(
-        [
-          "docker",
-          "login",
-          "-u",
-          this.containerConfig.credentials.username,
-          "--password-stdin",
-        ],
-        { stdin: "pipe", stdout: "pipe", stderr: "pipe" }
+      await dockerRun(
+        ["docker", "login", "-u", this.containerConfig.credentials.username, "--password-stdin"],
+        { stdin: this.containerConfig.credentials.password }
       );
-      loginProc.stdin.write(this.containerConfig.credentials.password);
-      loginProc.stdin.end();
-      const loginExit = await loginProc.exited;
-      if (loginExit !== 0) {
-        const stderr = await new Response(loginProc.stderr).text();
-        throw new Error(`Docker login failed: ${stderr}`);
-      }
     }
 
-    // Pull image first
-    const pullProc = Bun.spawn(["docker", "pull", this.containerConfig.image], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const pullExit = await pullProc.exited;
-    if (pullExit !== 0) {
-      const stderr = await new Response(pullProc.stderr).text();
-      throw new Error(
-        `Failed to pull image ${this.containerConfig.image}: ${stderr}`
-      );
-    }
+    // Pull image
+    await dockerRun(["docker", "pull", this.containerConfig.image]);
 
     // Create container
-    const createProc = Bun.spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const createStdout = await new Response(createProc.stdout).text();
-    const createExit = await createProc.exited;
-    if (createExit !== 0) {
-      const stderr = await new Response(createProc.stderr).text();
-      throw new Error(`Failed to create container: ${stderr}`);
-    }
-    this.containerId = createStdout.trim();
+    this.containerId = await dockerRun(args);
 
     // Start container
-    const startProc = Bun.spawn(
-      ["docker", "start", this.containerId],
-      { stdout: "pipe", stderr: "pipe" }
-    );
-    const startExit = await startProc.exited;
-    if (startExit !== 0) {
-      const stderr = await new Response(startProc.stderr).text();
-      throw new Error(`Failed to start container: ${stderr}`);
-    }
+    await dockerRun(["docker", "start", this.containerId]);
   }
 
   async stop(): Promise<void> {
@@ -171,6 +191,83 @@ export class DockerContainer {
       throw new Error("Container not started");
     }
     return this.containerId;
+  }
+}
+
+/**
+ * Manages a service sidecar container.
+ * Connects to a Docker network with the service name as hostname alias.
+ */
+export class DockerService {
+  private containerId: string | null = null;
+  private serviceName: string;
+  private config: ServiceConfig;
+
+  constructor(serviceName: string, config: ServiceConfig) {
+    this.serviceName = serviceName;
+    this.config = config;
+  }
+
+  async start(network: string): Promise<void> {
+    const args = ["docker", "create"];
+
+    // Network with hostname alias = service name
+    args.push("--network", network);
+    args.push("--network-alias", this.serviceName);
+
+    // Env
+    if (this.config.env) {
+      for (const [key, value] of Object.entries(this.config.env)) {
+        args.push("-e", `${key}=${value}`);
+      }
+    }
+
+    // Ports (mapped to host so host-mode jobs can reach them too)
+    if (this.config.ports) {
+      for (const port of this.config.ports) {
+        args.push("-p", String(port));
+      }
+    }
+
+    // Volumes
+    if (this.config.volumes) {
+      for (const vol of this.config.volumes) {
+        args.push("-v", vol);
+      }
+    }
+
+    // Options
+    if (this.config.options) {
+      args.push(...this.config.options.split(/\s+/));
+    }
+
+    args.push(this.config.image);
+
+    // Handle credentials
+    if (this.config.credentials) {
+      await dockerRun(
+        ["docker", "login", "-u", this.config.credentials.username, "--password-stdin"],
+        { stdin: this.config.credentials.password }
+      );
+    }
+
+    // Pull image
+    await dockerRun(["docker", "pull", this.config.image]);
+
+    // Create and start
+    this.containerId = await dockerRun(args);
+    await dockerRun(["docker", "start", this.containerId]);
+  }
+
+  async stop(): Promise<void> {
+    if (this.containerId) {
+      const proc = Bun.spawn(
+        ["docker", "rm", "-f", this.containerId],
+        { stdout: "pipe", stderr: "pipe" }
+      );
+      await proc.exited;
+      this.containerId = null;
+    }
   }
 }
 

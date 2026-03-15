@@ -51,6 +51,18 @@ const ContainerSchema = z.union([
   }),
 ]);
 
+const ServiceSchema = z.object({
+  image: z.string(),
+  credentials: z.object({
+    username: z.string(),
+    password: z.string(),
+  }).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  ports: z.array(z.union([z.string(), z.number()])).optional(),
+  volumes: z.array(z.string()).optional(),
+  options: z.string().optional(),
+});
+
 const JobSchema = z.object({
   name: z.string().optional(),
   "runs-on": z.union([z.string(), z.array(z.string())]).optional(),
@@ -59,6 +71,7 @@ const JobSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   defaults: DefaultsSchema.optional(),
   container: ContainerSchema.optional(),
+  services: z.record(z.string(), ServiceSchema).optional(),
   steps: z.array(StepSchema),
   strategy: StrategySchema.optional(),
   "timeout-minutes": z.number().optional(),
@@ -77,6 +90,7 @@ export type Step = z.infer<typeof StepSchema>;
 export type Job = z.infer<typeof JobSchema>;
 export type Workflow = z.infer<typeof WorkflowSchema>;
 export type ContainerConfig = z.infer<typeof ContainerSchema>;
+export type ServiceConfig = z.infer<typeof ServiceSchema>;
 
 export interface NormalizedContainer {
   image: string;

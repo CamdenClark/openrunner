@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { HostExecutor } from "./executor";
-import { DockerContainer, DockerExecutor } from "./docker";
+import { DockerContainer, DockerExecutor, DockerNetwork, DockerService } from "./docker";
 import { interpolate } from "./expressions";
 import {
   withWorkspace,
@@ -57,7 +57,12 @@ async function main(): Promise<void> {
   const workspace = join(parentDir, "workspace");
 
   const containerConfig = normalizeContainer(input.job.container);
+  const servicesConfig = input.job.services;
+  const needsDocker = !!(containerConfig || servicesConfig);
+
   let dockerContainer: DockerContainer | null = null;
+  let network: DockerNetwork | null = null;
+  const services: DockerService[] = [];
 
   try {
     await cloneSource(input.sourceDir, workspace);
@@ -71,10 +76,26 @@ async function main(): Promise<void> {
     const ctx = createExpressionContext(jobGithubCtx, jobEnv, input.runnerContext);
     ctx.needs = input.needsContext;
 
+    // Set up Docker network if we need containers or services
+    if (needsDocker) {
+      const networkName = `openrunner-${input.jobId}-${crypto.randomUUID().slice(0, 8)}`;
+      network = new DockerNetwork(networkName);
+      await network.create();
+
+      // Start service containers
+      if (servicesConfig) {
+        for (const [name, config] of Object.entries(servicesConfig)) {
+          const service = new DockerService(name, config);
+          await service.start(network.name);
+          services.push(service);
+        }
+      }
+    }
+
     let executor;
     if (containerConfig) {
       dockerContainer = new DockerContainer(containerConfig, workspace);
-      await dockerContainer.start(jobEnv);
+      await dockerContainer.start({ network: network?.name });
       executor = new DockerExecutor(dockerContainer, workspace, {
         interpolate: (template: string) => interpolate(template, ctx),
       });
@@ -94,8 +115,15 @@ async function main(): Promise<void> {
       workflowDefaults: input.workflowDefaults,
     });
   } finally {
+    // Cleanup in reverse order: job container, services, network, workspace
     if (dockerContainer) {
       await dockerContainer.stop().catch(() => {});
+    }
+    for (const service of services) {
+      await service.stop().catch(() => {});
+    }
+    if (network) {
+      await network.remove().catch(() => {});
     }
     await rm(parentDir, { recursive: true, force: true }).catch(() => {});
   }

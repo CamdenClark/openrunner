@@ -1,0 +1,16 @@
+name: Services without container (host mode)
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      web:
+        image: nginx:alpine
+        ports:
+          - "8085:80"
+    steps:
+      - name: Reach service via mapped port
+        run: |
+          # Without a job container, services are accessed via localhost mapped ports
+          curl -sf http://localhost:8085 > /dev/null
+          echo "service reachable on host"

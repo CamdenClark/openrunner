@@ -1,0 +1,19 @@
+name: Services basic
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    services:
+      web:
+        image: nginx:alpine
+        ports:
+          - "8080:80"
+    steps:
+      - name: Install curl
+        run: apk add --no-cache curl
+      - name: Reach service by hostname
+        run: |
+          # Service should be reachable by its name on the Docker network
+          curl -sf http://web:80 > /dev/null
+          echo "service reachable by hostname"

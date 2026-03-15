@@ -204,4 +204,20 @@ describe("acceptance", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("got hello from container");
   });
+
+  test("services: container job can reach service by hostname", async () => {
+    const { exitCode, stdout } = await run(fixture("services-basic.yml"), {
+      timeout: 120_000,
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("service reachable by hostname");
+  });
+
+  test("services: host job can reach service via mapped port", async () => {
+    const { exitCode, stdout } = await run(fixture("services-host.yml"), {
+      timeout: 120_000,
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("service reachable on host");
+  });
 });

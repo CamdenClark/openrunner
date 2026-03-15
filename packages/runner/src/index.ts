@@ -4,7 +4,7 @@ export type { Workflow, Job, Step, ContainerConfig, NormalizedContainer } from "
 export { HostExecutor } from "./executor";
 export type { Executor, StepResult, HostExecutorOptions } from "./executor";
 
-export { DockerContainer, DockerExecutor } from "./docker";
+export { DockerContainer, DockerExecutor, DockerNetwork, DockerService } from "./docker";
 
 export {
   interpolate,
