@@ -53,6 +53,7 @@ const WorkflowSchema = z.object({
   name: z.string().optional(),
   on: z.any().optional(),
   env: z.record(z.string(), z.string()).optional(),
+  defaults: DefaultsSchema.optional(),
   jobs: z.record(z.string(), JobSchema),
 });
 

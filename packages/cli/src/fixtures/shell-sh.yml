@@ -1,0 +1,9 @@
+name: Shell sh
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: sh with -e flag
+        shell: sh
+        run: echo "hello from sh"

@@ -1,0 +1,9 @@
+name: Custom shell template
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: custom shell with {0}
+        shell: bash {0}
+        run: echo "custom template works"

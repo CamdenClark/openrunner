@@ -10,7 +10,10 @@ export {
 } from "./expressions";
 export type { ExpressionContext } from "./expressions";
 
-export { buildGitHubContext, createExpressionContext, buildGitHubEnvVars } from "./context";
+export { buildGitHubContext, createExpressionContext, buildGitHubEnvVars, withWorkspace } from "./context";
+
+export { runWorkflow, buildDAG } from "./orchestrator";
+export type { JobResult, OrchestratorLogger, OrchestratorOptions } from "./orchestrator";
 
 export {
   parseActionRef,

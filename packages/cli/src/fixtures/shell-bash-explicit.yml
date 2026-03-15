@@ -1,0 +1,13 @@
+name: Explicit bash shell
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: pipefail catches errors
+        shell: bash
+        continue-on-error: true
+        run: |
+          false | echo "piped"
+      - name: report
+        run: echo "done"

@@ -73,6 +73,16 @@ async function resolveGitHubToken(): Promise<string> {
 }
 
 /**
+ * Return a copy of the github context with workspace overridden.
+ */
+export function withWorkspace(
+  githubCtx: Record<string, any>,
+  workspace: string
+): Record<string, any> {
+  return { ...githubCtx, workspace };
+}
+
+/**
  * Create a fresh expression context for a workflow run.
  */
 export function createExpressionContext(

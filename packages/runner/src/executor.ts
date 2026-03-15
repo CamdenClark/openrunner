@@ -6,11 +6,85 @@ import {
   installActionDeps,
 } from "./actions";
 
+/**
+ * Shell command templates matching GitHub Actions behavior.
+ * `{0}` is replaced with the path to the temp script file.
+ */
+const SHELL_TEMPLATES: Record<string, { command: string[]; ext: string }> = {
+  bash: {
+    command: ["bash", "--noprofile", "--norc", "-eo", "pipefail", "{0}"],
+    ext: ".sh",
+  },
+  sh: {
+    command: ["sh", "-e", "{0}"],
+    ext: ".sh",
+  },
+  pwsh: {
+    command: ["pwsh", "-command", ". '{0}'"],
+    ext: ".ps1",
+  },
+  python: {
+    command: ["python", "{0}"],
+    ext: ".py",
+  },
+  python3: {
+    command: ["python3", "{0}"],
+    ext: ".py",
+  },
+  cmd: {
+    command: ["cmd", "/D", "/E:ON", "/V:OFF", "/S", "/C", "CALL \"{0}\""],
+    ext: ".cmd",
+  },
+  powershell: {
+    command: ["powershell", "-command", ". '{0}'"],
+    ext: ".ps1",
+  },
+};
+
+/**
+ * Default shell template (when no shell is specified).
+ * GitHub Actions uses `bash -e {0}` with fallback to `sh -e {0}`.
+ */
+const DEFAULT_SHELL_TEMPLATE = {
+  command: ["bash", "-e", "{0}"],
+  ext: ".sh",
+};
+
+/**
+ * Parse a shell string into a command template.
+ * If it contains `{0}`, treat it as a custom template.
+ * Otherwise, look it up in SHELL_TEMPLATES.
+ */
+function resolveShellTemplate(
+  shell: string | undefined
+): { command: string[]; ext: string } {
+  if (!shell) {
+    return DEFAULT_SHELL_TEMPLATE;
+  }
+
+  // Custom shell template with {0} placeholder
+  if (shell.includes("{0}")) {
+    // Split on whitespace, preserving {0} in arguments
+    const parts = shell.split(/\s+/);
+    return { command: parts, ext: ".sh" };
+  }
+
+  const template = SHELL_TEMPLATES[shell];
+  if (template) {
+    return template;
+  }
+
+  // Unknown shell: just invoke it with the script file as argument
+  return { command: [shell, "{0}"], ext: ".sh" };
+}
+
 export interface StepResult {
   exitCode: number;
   stdout: string;
   stderr: string;
   outputs: Record<string, string>;
+  envVars: Record<string, string>;
+  pathAdditions: string[];
 }
 
 export interface Executor {
@@ -42,8 +116,7 @@ export class HostExecutor implements Executor {
       ? resolve(this.workingDirectory, step["working-directory"])
       : this.workingDirectory;
 
-    const shell = step.shell ?? "bash";
-    const args = shell === "bash" ? ["-e"] : [];
+    const template = resolveShellTemplate(step.shell);
 
     const outputFile = join(
       Bun.env.TMPDIR ?? "/tmp",
@@ -72,10 +145,21 @@ export class HostExecutor implements Executor {
       GITHUB_PATH: pathFile,
     };
 
-    const proc = Bun.spawn([shell, ...args], {
+    // Write script to temp file (GitHub Actions behavior)
+    const scriptFile = join(
+      Bun.env.TMPDIR ?? "/tmp",
+      `openrunner-script-${crypto.randomUUID()}${template.ext}`
+    );
+    await Bun.write(scriptFile, step.run);
+
+    // Build command by replacing {0} with script file path
+    const command = template.command.map((arg) =>
+      arg === "{0}" ? scriptFile : arg.replace("{0}", scriptFile)
+    );
+
+    const proc = Bun.spawn(command, {
       cwd,
       env: stepEnv,
-      stdin: new Blob([step.run]),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -93,15 +177,18 @@ export class HostExecutor implements Executor {
 
     // Parse outputs from GITHUB_OUTPUT file
     const outputs = await parseFileCommands(outputFile);
+    const envVars = await parseFileCommands(envFile);
+    const pathAdditions = await parsePathFile(pathFile);
 
     // Clean up temp files
     await Promise.allSettled([
       Bun.file(outputFile).delete(),
       Bun.file(envFile).delete(),
       Bun.file(pathFile).delete(),
+      Bun.file(scriptFile).delete(),
     ]);
 
-    return { exitCode, stdout, stderr, outputs };
+    return { exitCode, stdout, stderr, outputs, envVars, pathAdditions };
   }
 
   private async runUsesStep(
@@ -201,6 +288,8 @@ export class HostExecutor implements Executor {
     clearTimeout(timeout);
 
     const outputs = await parseFileCommands(outputFile);
+    const envVars = await parseFileCommands(envFile);
+    const pathAdditions = await parsePathFile(pathFile);
 
     await Promise.allSettled([
       Bun.file(outputFile).delete(),
@@ -208,7 +297,7 @@ export class HostExecutor implements Executor {
       Bun.file(pathFile).delete(),
     ]);
 
-    return { exitCode, stdout, stderr, outputs };
+    return { exitCode, stdout, stderr, outputs, envVars, pathAdditions };
   }
 }
 
@@ -244,4 +333,12 @@ async function parseFileCommands(
   }
 
   return result;
+}
+
+async function parsePathFile(filePath: string): Promise<string[]> {
+  const content = await Bun.file(filePath).text();
+  return content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }

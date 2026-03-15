@@ -1,0 +1,12 @@
+name: Python shell
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: run python
+        shell: python3
+        run: |
+          import sys
+          print("python works")
+          sys.exit(0)

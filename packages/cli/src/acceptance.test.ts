@@ -84,4 +84,53 @@ describe("acceptance", () => {
     expect(stdout).toContain("Hello, Acceptance Test!");
     expect(stdout).toContain("Action ran at");
   });
+
+  test("multi-job DAG with output propagation", async () => {
+    const { exitCode, stdout } = await run(fixture("multi-job-dag.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("compiling...");
+    expect(stdout).toContain("linting passed");
+    expect(stdout).toContain("deploying build-42");
+  });
+
+  test("explicit shell: bash uses pipefail", async () => {
+    const { exitCode, stdout } = await run(
+      fixture("shell-bash-explicit.yml")
+    );
+    // The pipefail step should fail (false | echo), but continue-on-error lets job succeed
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("done");
+  });
+
+  test("shell: sh works with -e flag", async () => {
+    const { exitCode, stdout } = await run(fixture("shell-sh.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("hello from sh");
+  });
+
+  test("custom shell template with {0}", async () => {
+    const { exitCode, stdout } = await run(fixture("shell-custom.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("custom template works");
+  });
+
+  test("shell: python runs python scripts", async () => {
+    const { exitCode, stdout } = await run(fixture("shell-python.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("python works");
+  });
+
+  test("workflow-level defaults.run.shell", async () => {
+    const { exitCode, stdout } = await run(fixture("workflow-defaults.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("workflow default sh");
+    expect(stdout).toContain("step override bash");
+  });
+
+  test("GITHUB_ENV and GITHUB_PATH propagate between steps", async () => {
+    const { exitCode, stdout } = await run(fixture("github-env-path.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("got hello-from-env");
+    expect(stdout).toContain("my-tool-output");
+  });
 });

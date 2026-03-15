@@ -1,0 +1,14 @@
+name: Workflow-level defaults
+on: push
+defaults:
+  run:
+    shell: sh
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: uses workflow default shell
+        run: echo "workflow default sh"
+      - name: step override
+        shell: bash
+        run: echo "step override bash"

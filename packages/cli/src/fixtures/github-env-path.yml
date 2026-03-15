@@ -1,0 +1,23 @@
+name: GITHUB_ENV and GITHUB_PATH
+on: push
+
+jobs:
+  test-env-path:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set env var
+        run: echo "MY_VAR=hello-from-env" >> "$GITHUB_ENV"
+
+      - name: Use env var
+        run: echo "got $MY_VAR"
+
+      - name: Add to path
+        run: |
+          mkdir -p /tmp/my-custom-bin
+          echo '#!/bin/bash' > /tmp/my-custom-bin/my-tool
+          echo 'echo "my-tool-output"' >> /tmp/my-custom-bin/my-tool
+          chmod +x /tmp/my-custom-bin/my-tool
+          echo "/tmp/my-custom-bin" >> "$GITHUB_PATH"
+
+      - name: Use path addition
+        run: my-tool
