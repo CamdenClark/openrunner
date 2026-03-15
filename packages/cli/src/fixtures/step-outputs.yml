@@ -1,0 +1,11 @@
+name: Step Outputs
+on: push
+jobs:
+  outputs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Produce output
+        id: producer
+        run: echo "greeting=hello world" >> "$GITHUB_OUTPUT"
+      - name: Consume output
+        run: echo "got ${{ steps.producer.outputs.greeting }}"

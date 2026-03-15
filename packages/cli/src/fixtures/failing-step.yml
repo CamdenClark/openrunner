@@ -1,0 +1,10 @@
+name: Failing Step
+on: push
+jobs:
+  fail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: This fails
+        run: exit 1
+      - name: Should not run
+        run: echo "unreachable"

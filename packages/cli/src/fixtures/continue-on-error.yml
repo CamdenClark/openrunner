@@ -1,0 +1,11 @@
+name: Continue On Error
+on: push
+jobs:
+  resilient:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allowed to fail
+        run: exit 1
+        continue-on-error: true
+      - name: Still runs
+        run: echo "kept going"

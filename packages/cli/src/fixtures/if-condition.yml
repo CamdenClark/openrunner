@@ -1,0 +1,14 @@
+name: If Condition
+on: push
+jobs:
+  conditionals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Should run
+        if: true
+        run: echo "this runs"
+      - name: Should skip
+        if: false
+        run: echo "this should not appear"
+      - name: After skip
+        run: echo "back to normal"

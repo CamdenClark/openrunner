@@ -1,0 +1,18 @@
+name: Env Vars
+on: push
+env:
+  WORKFLOW_VAR: workflow-level
+jobs:
+  env-test:
+    runs-on: ubuntu-latest
+    env:
+      JOB_VAR: job-level
+    steps:
+      - name: Check workflow env
+        run: echo "workflow=$WORKFLOW_VAR"
+      - name: Check job env
+        run: echo "job=$JOB_VAR"
+      - name: Check step env
+        run: echo "step=$STEP_VAR"
+        env:
+          STEP_VAR: step-level

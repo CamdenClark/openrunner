@@ -11,3 +11,10 @@ export {
 export type { ExpressionContext } from "./expressions";
 
 export { buildGitHubContext, createExpressionContext } from "./context";
+
+export {
+  parseActionRef,
+  resolveAction,
+  readActionMeta,
+} from "./actions";
+export type { ActionRef, ActionMeta } from "./actions";

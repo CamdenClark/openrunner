@@ -1,9 +1,11 @@
 import { z } from "zod/v4";
 
+const stringOrBool = z.union([z.string(), z.boolean()]).transform(v => String(v));
+
 const StepSchema = z.object({
   name: z.string().optional(),
   id: z.string().optional(),
-  if: z.string().optional(),
+  if: stringOrBool.optional(),
   run: z.string().optional(),
   uses: z.string().optional(),
   with: z.record(z.string(), z.any()).optional(),
@@ -29,7 +31,7 @@ const JobSchema = z.object({
   name: z.string().optional(),
   "runs-on": z.union([z.string(), z.array(z.string())]).optional(),
   needs: z.union([z.string(), z.array(z.string())]).optional(),
-  if: z.string().optional(),
+  if: stringOrBool.optional(),
   env: z.record(z.string(), z.string()).optional(),
   steps: z.array(StepSchema),
   strategy: StrategySchema.optional(),

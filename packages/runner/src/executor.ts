@@ -1,5 +1,10 @@
 import { join, resolve } from "node:path";
 import type { Step } from "./parser";
+import {
+  resolveAction,
+  readActionMeta,
+  installActionDeps,
+} from "./actions";
 
 export interface StepResult {
   exitCode: number;
@@ -20,8 +25,11 @@ export class HostExecutor implements Executor {
   }
 
   async runStep(step: Step, env: Record<string, string>): Promise<StepResult> {
+    if (step.uses) {
+      return this.runUsesStep(step, env);
+    }
     if (!step.run) {
-      throw new Error("HostExecutor only supports run: steps");
+      throw new Error("Step must have either 'run' or 'uses'");
     }
 
     const cwd = step["working-directory"]
@@ -81,6 +89,109 @@ export class HostExecutor implements Executor {
     const outputs = await parseFileCommands(outputFile);
 
     // Clean up temp files
+    await Promise.allSettled([
+      Bun.file(outputFile).delete(),
+      Bun.file(envFile).delete(),
+      Bun.file(pathFile).delete(),
+    ]);
+
+    return { exitCode, stdout, stderr, outputs };
+  }
+
+  private async runUsesStep(
+    step: Step,
+    env: Record<string, string>
+  ): Promise<StepResult> {
+    const actionDir = await resolveAction(step.uses!, this.workingDirectory);
+    const meta = await readActionMeta(actionDir);
+
+    const using = meta.runs.using;
+    if (!using.startsWith("node") && using !== "bun") {
+      throw new Error(
+        `Unsupported action type: ${using}. Only JavaScript (node*/bun) actions are supported.`
+      );
+    }
+
+    const entrypoint = meta.runs.main;
+    if (!entrypoint) {
+      throw new Error(`Action ${step.uses} has no runs.main entrypoint`);
+    }
+
+    await installActionDeps(actionDir, entrypoint);
+
+    const entrypointPath = join(actionDir, entrypoint);
+
+    // Set up temp files for workflow commands
+    const outputFile = join(
+      Bun.env.TMPDIR ?? "/tmp",
+      `openrunner-output-${crypto.randomUUID()}`
+    );
+    const envFile = join(
+      Bun.env.TMPDIR ?? "/tmp",
+      `openrunner-env-${crypto.randomUUID()}`
+    );
+    const pathFile = join(
+      Bun.env.TMPDIR ?? "/tmp",
+      `openrunner-path-${crypto.randomUUID()}`
+    );
+
+    await Bun.write(outputFile, "");
+    await Bun.write(envFile, "");
+    await Bun.write(pathFile, "");
+
+    // Build INPUT_ env vars from `with:` and action defaults
+    const inputEnv: Record<string, string> = {};
+    if (meta.inputs) {
+      for (const [key, def] of Object.entries(meta.inputs)) {
+        if (def.default !== undefined) {
+          inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
+            String(def.default);
+        }
+      }
+    }
+    if (step.with) {
+      for (const [key, value] of Object.entries(step.with)) {
+        inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
+          String(value);
+      }
+    }
+
+    const cwd = step["working-directory"]
+      ? resolve(this.workingDirectory, step["working-directory"])
+      : this.workingDirectory;
+
+    const stepEnv: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...env,
+      ...(step.env ?? {}),
+      ...inputEnv,
+      GITHUB_OUTPUT: outputFile,
+      GITHUB_ENV: envFile,
+      GITHUB_PATH: pathFile,
+      GITHUB_WORKSPACE: this.workingDirectory,
+      GITHUB_ACTION_PATH: actionDir,
+    };
+
+    const proc = Bun.spawn(["bun", "run", entrypointPath], {
+      cwd,
+      env: stepEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const timeoutMs = (step["timeout-minutes"] ?? 360) * 60 * 1000;
+    const timeout = setTimeout(() => proc.kill(), timeoutMs);
+
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    const exitCode = await proc.exited;
+    clearTimeout(timeout);
+
+    const outputs = await parseFileCommands(outputFile);
+
     await Promise.allSettled([
       Bun.file(outputFile).delete(),
       Bun.file(envFile).delete(),

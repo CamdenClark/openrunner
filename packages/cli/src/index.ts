@@ -60,15 +60,26 @@ for (const [jobId, job] of jobEntries) {
       }
     }
 
-    if (!step.run) {
-      console.log(`\x1b[33m│ ⊘ ${stepLabel} (uses: not yet supported)\x1b[0m`);
+    if (!step.run && !step.uses) {
+      console.log(`\x1b[33m│ ⊘ ${stepLabel} (no run or uses)\x1b[0m`);
       continue;
     }
 
     console.log(`\x1b[34m│ ▶ ${stepLabel}\x1b[0m`);
 
-    const expandedRun = interpolate(step.run, ctx);
-    const expandedStep = { ...step, run: expandedRun };
+    // Interpolate run command or with inputs
+    const expandedStep = { ...step };
+    if (step.run) {
+      expandedStep.run = interpolate(step.run, ctx);
+    }
+    if (step.with) {
+      const expandedWith: Record<string, any> = {};
+      for (const [key, value] of Object.entries(step.with)) {
+        expandedWith[key] =
+          typeof value === "string" ? interpolate(value, ctx) : value;
+      }
+      expandedStep.with = expandedWith;
+    }
 
     const result = await executor.runStep(expandedStep, jobEnv);
 

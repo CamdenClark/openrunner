@@ -1,0 +1,12 @@
+name: Basic Run
+on: push
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say hello
+        run: echo "hello from openrunner"
+      - name: Multi-line
+        run: |
+          echo "line one"
+          echo "line two"
