@@ -1,0 +1,15 @@
+name: Container basic
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - name: Check running in container
+        run: |
+          cat /etc/os-release
+          echo "container works"
+      - name: Check workspace mount
+        run: |
+          echo "workspace=$GITHUB_WORKSPACE"
+          ls "$GITHUB_WORKSPACE"

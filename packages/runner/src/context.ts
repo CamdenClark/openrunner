@@ -83,14 +83,50 @@ export function withWorkspace(
 }
 
 /**
+ * Build the runner.* context reflecting the host machine.
+ */
+export function buildRunnerContext(
+  runnerTemp: string,
+  runnerToolCache: string,
+  debug: boolean = false
+): Record<string, string> {
+  const platform = process.platform;
+  const os =
+    platform === "darwin"
+      ? "macOS"
+      : platform === "win32"
+        ? "Windows"
+        : "Linux";
+
+  const arch = process.arch;
+  const runnerArch =
+    arch === "arm64"
+      ? "ARM64"
+      : arch === "ia32"
+        ? "X86"
+        : "X64";
+
+  return {
+    name: "openrunner",
+    os,
+    arch: runnerArch,
+    temp: runnerTemp,
+    tool_cache: runnerToolCache,
+    debug: debug ? "1" : "0",
+  };
+}
+
+/**
  * Create a fresh expression context for a workflow run.
  */
 export function createExpressionContext(
   githubCtx: Record<string, any>,
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  runnerCtx: Record<string, string> = {}
 ): ExpressionContext {
   return {
     github: githubCtx,
+    runner: runnerCtx,
     env,
     steps: {},
     matrix: {},

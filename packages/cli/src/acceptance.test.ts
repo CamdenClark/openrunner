@@ -158,6 +158,17 @@ describe("acceptance", () => {
     expect(stdout).toContain("always runs");
   });
 
+  test("runner.* context is populated", async () => {
+    const { exitCode, stdout } = await run(fixture("runner-context.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("name=openrunner");
+    expect(stdout).toContain("debug=0");
+    // os should be one of macOS, Linux, Windows
+    expect(stdout).toMatch(/os=(macOS|Linux|Windows)/);
+    // arch should be one of X86, X64, ARM64
+    expect(stdout).toMatch(/arch=(X86|X64|ARM64)/);
+  });
+
   test("skipped job cascades to downstream unless always()", async () => {
     const { exitCode, stdout } = await run(
       fixture("job-if-skip-downstream.yml")
@@ -166,5 +177,31 @@ describe("acceptance", () => {
     expect(stdout).not.toContain("build should not run");
     expect(stdout).not.toContain("test should not run either");
     expect(stdout).toContain("always-test runs despite skipped dep");
+  });
+
+  test("container: runs steps inside docker container", async () => {
+    const { exitCode, stdout } = await run(fixture("container-basic.yml"), {
+      timeout: 120_000,
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("container works");
+    expect(stdout).toContain("Alpine");
+  });
+
+  test("container: env vars propagate into container", async () => {
+    const { exitCode, stdout } = await run(fixture("container-env.yml"), {
+      timeout: 120_000,
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("job=from-job");
+    expect(stdout).toContain("step=from-step");
+  });
+
+  test("container: step outputs work inside container", async () => {
+    const { exitCode, stdout } = await run(fixture("container-outputs.yml"), {
+      timeout: 120_000,
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("got hello from container");
   });
 });

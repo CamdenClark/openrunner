@@ -6,6 +6,7 @@ import { interpolate } from "./expressions";
 import {
   buildGitHubContext,
   buildGitHubEnvVars,
+  buildRunnerContext,
   createExpressionContext,
 } from "./context";
 import type { RunnerEvent } from "./runner";
@@ -107,6 +108,7 @@ async function runJobSteps(
   job: Job,
   githubCtx: Record<string, any>,
   githubEnvVars: Record<string, string>,
+  runnerCtx: Record<string, string>,
   workflowEnv: Record<string, string>,
   needsCtx: Record<string, { outputs: Record<string, string>; result: string }>,
   sourceDir: string,
@@ -124,6 +126,7 @@ async function runJobSteps(
     jobId,
     env: jobEnv,
     githubContext: githubCtx,
+    runnerContext: runnerCtx,
     needsContext: needsCtx,
     workflowDefaults,
     sourceDir,
@@ -203,9 +206,14 @@ export async function runWorkflow(
 
   logger.workflowStart(workflow.name ?? "workflow");
 
-  // Resolve github context and env vars once
+  // Resolve github context, runner context, and env vars once
   const githubCtx = await buildGitHubContext(sourceDir);
   const githubEnvVars = await buildGitHubEnvVars(githubCtx);
+  const runnerCtx = buildRunnerContext(
+    githubEnvVars.RUNNER_TEMP,
+    githubEnvVars.RUNNER_TOOL_CACHE,
+    Bun.env.RUNNER_DEBUG === "1"
+  );
   const workflowEnv: Record<string, string> = workflow.env ?? {};
 
   // Filter jobs if requested
@@ -269,7 +277,7 @@ export async function runWorkflow(
       const jobIfCtx = createExpressionContext(githubCtx, {
         ...workflowEnv,
         ...(job.env ?? {}),
-      });
+      }, runnerCtx);
       jobIfCtx.needs = needsCtx;
       jobIfCtx.jobStatus = depJobStatus;
 
@@ -316,6 +324,7 @@ export async function runWorkflow(
             job,
             githubCtx,
             githubEnvVars,
+            runnerCtx,
             workflowEnv,
             needsCtx,
             sourceDir,

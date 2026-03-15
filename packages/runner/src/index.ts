@@ -1,8 +1,10 @@
-export { parseWorkflow } from "./parser";
-export type { Workflow, Job, Step } from "./parser";
+export { parseWorkflow, normalizeContainer } from "./parser";
+export type { Workflow, Job, Step, ContainerConfig, NormalizedContainer } from "./parser";
 
 export { HostExecutor } from "./executor";
 export type { Executor, StepResult, HostExecutorOptions } from "./executor";
+
+export { DockerContainer, DockerExecutor } from "./docker";
 
 export {
   interpolate,

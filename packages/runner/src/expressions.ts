@@ -6,6 +6,7 @@
 
 export interface ExpressionContext {
   github: Record<string, any>;
+  runner: Record<string, string>;
   env: Record<string, string>;
   steps: Record<string, { outputs: Record<string, string>; outcome: string }>;
   matrix: Record<string, any>;

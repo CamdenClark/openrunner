@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { HostExecutor } from "./executor";
+import { DockerContainer, DockerExecutor } from "./docker";
 import { interpolate } from "./expressions";
 import {
   withWorkspace,
@@ -12,12 +13,14 @@ import {
 import { runJob } from "./runner";
 import type { RunnerEvent } from "./runner";
 import type { Job, Workflow } from "./parser";
+import { normalizeContainer } from "./parser";
 
 export interface JobInput {
   job: Job;
   jobId: string;
   env: Record<string, string>;
   githubContext: Record<string, any>;
+  runnerContext: Record<string, string>;
   needsContext: Record<string, { outputs: Record<string, string>; result: string }>;
   workflowDefaults?: Workflow["defaults"];
   sourceDir: string;
@@ -53,6 +56,9 @@ async function main(): Promise<void> {
   const parentDir = await mkdtemp(join(tmpdir(), "openrunner-job-"));
   const workspace = join(parentDir, "workspace");
 
+  const containerConfig = normalizeContainer(input.job.container);
+  let dockerContainer: DockerContainer | null = null;
+
   try {
     await cloneSource(input.sourceDir, workspace);
 
@@ -62,12 +68,21 @@ async function main(): Promise<void> {
       GITHUB_WORKSPACE: workspace,
     };
 
-    const ctx = createExpressionContext(jobGithubCtx, jobEnv);
+    const ctx = createExpressionContext(jobGithubCtx, jobEnv, input.runnerContext);
     ctx.needs = input.needsContext;
 
-    const executor = new HostExecutor(workspace, {
-      interpolate: (template: string) => interpolate(template, ctx),
-    });
+    let executor;
+    if (containerConfig) {
+      dockerContainer = new DockerContainer(containerConfig, workspace);
+      await dockerContainer.start(jobEnv);
+      executor = new DockerExecutor(dockerContainer, workspace, {
+        interpolate: (template: string) => interpolate(template, ctx),
+      });
+    } else {
+      executor = new HostExecutor(workspace, {
+        interpolate: (template: string) => interpolate(template, ctx),
+      });
+    }
 
     await runJob({
       job: input.job,
@@ -79,6 +94,9 @@ async function main(): Promise<void> {
       workflowDefaults: input.workflowDefaults,
     });
   } finally {
+    if (dockerContainer) {
+      await dockerContainer.stop().catch(() => {});
+    }
     await rm(parentDir, { recursive: true, force: true }).catch(() => {});
   }
 }

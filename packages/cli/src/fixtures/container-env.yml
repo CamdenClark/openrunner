@@ -1,0 +1,18 @@
+name: Container with env
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+      env:
+        CONTAINER_VAR: from-container
+    env:
+      JOB_VAR: from-job
+    steps:
+      - name: Check env vars
+        env:
+          STEP_VAR: from-step
+        run: |
+          echo "job=$JOB_VAR"
+          echo "step=$STEP_VAR"

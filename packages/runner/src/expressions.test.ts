@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 const ctx: ExpressionContext = {
   github: { sha: "abc123", ref: "refs/heads/main", actor: "testuser" },
+  runner: { name: "openrunner", os: "Linux", arch: "X64", temp: "/tmp/runner", tool_cache: "/tmp/tool-cache", debug: "0" },
   env: { CI: "true", NODE_ENV: "test" },
   steps: {
     build: { outputs: { artifact: "dist.tar.gz" }, outcome: "success" },
@@ -24,6 +25,15 @@ test("resolves context references", () => {
     "dist.tar.gz"
   );
   expect(evaluateExpression("matrix.os", ctx)).toBe("ubuntu-latest");
+});
+
+test("resolves runner context references", () => {
+  expect(evaluateExpression("runner.name", ctx)).toBe("openrunner");
+  expect(evaluateExpression("runner.os", ctx)).toBe("Linux");
+  expect(evaluateExpression("runner.arch", ctx)).toBe("X64");
+  expect(evaluateExpression("runner.temp", ctx)).toBe("/tmp/runner");
+  expect(evaluateExpression("runner.tool_cache", ctx)).toBe("/tmp/tool-cache");
+  expect(evaluateExpression("runner.debug", ctx)).toBe("0");
 });
 
 test("evaluates literals", () => {

@@ -1,0 +1,12 @@
+name: Container step outputs
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - name: Set output
+        id: setter
+        run: echo "msg=hello from container" >> "$GITHUB_OUTPUT"
+      - name: Read output
+        run: echo "got ${{ steps.setter.outputs.msg }}"
