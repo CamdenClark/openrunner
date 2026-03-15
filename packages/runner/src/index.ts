@@ -2,7 +2,7 @@ export { parseWorkflow } from "./parser";
 export type { Workflow, Job, Step } from "./parser";
 
 export { HostExecutor } from "./executor";
-export type { Executor, StepResult } from "./executor";
+export type { Executor, StepResult, HostExecutorOptions } from "./executor";
 
 export {
   interpolate,
@@ -10,7 +10,7 @@ export {
 } from "./expressions";
 export type { ExpressionContext } from "./expressions";
 
-export { buildGitHubContext, createExpressionContext } from "./context";
+export { buildGitHubContext, createExpressionContext, buildGitHubEnvVars } from "./context";
 
 export {
   parseActionRef,

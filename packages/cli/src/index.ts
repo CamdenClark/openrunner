@@ -4,6 +4,7 @@ import {
   parseWorkflow,
   HostExecutor,
   buildGitHubContext,
+  buildGitHubEnvVars,
   createExpressionContext,
   interpolate,
 } from "@openrunner/runner";
@@ -30,7 +31,7 @@ const workflow = parseWorkflow(yamlContent);
 console.log(`\x1b[1m▶ Workflow: ${workflow.name ?? workflowPath}\x1b[0m\n`);
 
 const githubCtx = await buildGitHubContext(cwd);
-const executor = new HostExecutor(cwd);
+const githubEnvVars = await buildGitHubEnvVars(githubCtx);
 
 const workflowEnv: Record<string, string> = workflow.env ?? {};
 let workflowFailed = false;
@@ -41,8 +42,11 @@ const jobEntries = Object.entries(workflow.jobs).filter(
 );
 
 for (const [jobId, job] of jobEntries) {
-  const jobEnv = { ...workflowEnv, ...(job.env ?? {}) };
+  const jobEnv = { ...githubEnvVars, ...workflowEnv, ...(job.env ?? {}) };
   const ctx = createExpressionContext(githubCtx, jobEnv);
+  const executor = new HostExecutor(cwd, {
+    interpolate: (template: string) => interpolate(template, ctx),
+  });
 
   console.log(`\x1b[36m┌ Job: ${job.name ?? jobId}\x1b[0m`);
 
@@ -67,8 +71,18 @@ for (const [jobId, job] of jobEntries) {
 
     console.log(`\x1b[34m│ ▶ ${stepLabel}\x1b[0m`);
 
-    // Interpolate run command or with inputs
+    // Apply job-level defaults for run: steps
     const expandedStep = { ...step };
+    if (step.run && job.defaults?.run) {
+      if (job.defaults.run["working-directory"] && !step["working-directory"]) {
+        expandedStep["working-directory"] = job.defaults.run["working-directory"];
+      }
+      if (job.defaults.run.shell && !step.shell) {
+        expandedStep.shell = job.defaults.run.shell;
+      }
+    }
+
+    // Interpolate run command or with inputs
     if (step.run) {
       expandedStep.run = interpolate(step.run, ctx);
     }

@@ -17,11 +17,17 @@ export interface Executor {
   runStep(step: Step, env: Record<string, string>): Promise<StepResult>;
 }
 
+export interface HostExecutorOptions {
+  interpolate?: (template: string) => string;
+}
+
 export class HostExecutor implements Executor {
   private workingDirectory: string;
+  private interpolate?: (template: string) => string;
 
-  constructor(workingDirectory?: string) {
+  constructor(workingDirectory?: string, options?: HostExecutorOptions) {
     this.workingDirectory = workingDirectory ?? process.cwd();
+    this.interpolate = options?.interpolate;
   }
 
   async runStep(step: Step, env: Record<string, string>): Promise<StepResult> {
@@ -144,8 +150,12 @@ export class HostExecutor implements Executor {
     if (meta.inputs) {
       for (const [key, def] of Object.entries(meta.inputs)) {
         if (def.default !== undefined) {
-          inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
-            String(def.default);
+          let value = String(def.default);
+          // Interpolate ${{ }} expressions in action input defaults
+          if (this.interpolate && value.includes("${{")) {
+            value = this.interpolate(value);
+          }
+          inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] = value;
         }
       }
     }

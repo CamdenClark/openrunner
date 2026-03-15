@@ -27,12 +27,22 @@ const StrategySchema = z.object({
   "max-parallel": z.number().optional(),
 });
 
+const DefaultsRunSchema = z.object({
+  shell: z.string().optional(),
+  "working-directory": z.string().optional(),
+});
+
+const DefaultsSchema = z.object({
+  run: DefaultsRunSchema.optional(),
+});
+
 const JobSchema = z.object({
   name: z.string().optional(),
   "runs-on": z.union([z.string(), z.array(z.string())]).optional(),
   needs: z.union([z.string(), z.array(z.string())]).optional(),
   if: stringOrBool.optional(),
   env: z.record(z.string(), z.string()).optional(),
+  defaults: DefaultsSchema.optional(),
   steps: z.array(StepSchema),
   strategy: StrategySchema.optional(),
   "timeout-minutes": z.number().optional(),
