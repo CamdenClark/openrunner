@@ -11,6 +11,40 @@ import {
 } from "./context";
 import type { RunnerEvent } from "./runner";
 import type { JobInput } from "./bin";
+
+/**
+ * Resolve the Docker image for a job based on its runs-on label.
+ * Returns undefined if the job should run locally (no matching image).
+ */
+function resolveRunnerImage(
+  job: Job,
+  runnerImages?: Record<string, string>
+): string | undefined {
+  if (!runnerImages) return undefined;
+  const runsOn = job["runs-on"];
+  if (!runsOn) return undefined;
+  const labels = Array.isArray(runsOn) ? runsOn : [runsOn];
+  for (const label of labels) {
+    if (runnerImages[label]) return runnerImages[label];
+  }
+  return undefined;
+}
+
+/**
+ * Determine how to spawn the job-worker subprocess.
+ * - Compiled binary: process.execPath is the binary itself, use `job-worker` subcommand
+ * - Interpreted: process.execPath is bun, use `run <script>` to run bin.ts
+ */
+function getJobWorkerCommand(): string[] {
+  const isBun = process.execPath.endsWith("bun") || process.execPath.endsWith("bun.exe");
+  if (isBun) {
+    // Running interpreted via bun — spawn bin.ts directly
+    const binPath = join(import.meta.dir, "bin.ts");
+    return ["bun", "run", binPath];
+  }
+  // Compiled binary — use subcommand
+  return [process.execPath, "job-worker"];
+}
 import { expandMatrixJobs, type ExpandedJob } from "./matrix";
 
 export interface JobResult {
@@ -34,6 +68,8 @@ export interface OrchestratorLogger {
 export interface OrchestratorOptions {
   sourceDir: string;
   jobFilter?: string;
+  /** Maps runs-on labels to Docker image tags. Jobs matching a key run in that image. */
+  runnerImages?: Record<string, string>;
   logger?: OrchestratorLogger;
 }
 
@@ -181,7 +217,8 @@ async function runJobSteps(
   matrixCtx: Record<string, any>,
   sourceDir: string,
   logger: OrchestratorLogger,
-  workflowDefaults?: Workflow["defaults"]
+  workflowDefaults?: Workflow["defaults"],
+  runnerImage?: string
 ): Promise<{ success: boolean; outputs: Record<string, string> }> {
   const jobEnv = {
     ...githubEnvVars,
@@ -189,20 +226,40 @@ async function runJobSteps(
     ...(job.env ?? {}),
   };
 
+  const CONTAINER_SOURCE = "/mnt/source";
+  const isDocker = !!runnerImage;
+
+  // Override host-specific paths for Docker execution
+  const effectiveEnv = isDocker
+    ? {
+        ...jobEnv,
+        RUNNER_TEMP: "/tmp/runner",
+        RUNNER_TOOL_CACHE: "/tmp/runner/tool-cache",
+        GITHUB_EVENT_PATH: "",
+      }
+    : jobEnv;
+
+  const effectiveRunnerCtx = isDocker
+    ? { ...runnerCtx, temp: "/tmp/runner", tool_cache: "/tmp/runner/tool-cache" }
+    : runnerCtx;
+
   const jobInput: JobInput = {
     job,
     jobId,
-    env: jobEnv,
+    env: effectiveEnv,
     githubContext: githubCtx,
-    runnerContext: runnerCtx,
+    runnerContext: effectiveRunnerCtx,
     needsContext: needsCtx,
     matrixContext: matrixCtx,
     workflowDefaults,
-    sourceDir,
+    sourceDir: isDocker ? CONTAINER_SOURCE : sourceDir,
   };
 
-  const binPath = join(import.meta.dir, "bin.ts");
-  const proc = Bun.spawn(["bun", "run", binPath], {
+  const spawnCommand = isDocker
+    ? ["docker", "run", "--rm", "-i", "-v", `${sourceDir}:${CONTAINER_SOURCE}:ro`, runnerImage!]
+    : getJobWorkerCommand();
+
+  const proc = Bun.spawn(spawnCommand, {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -234,7 +291,13 @@ async function runJobSteps(
       buffer = buffer.slice(newlineIdx + 1);
       if (!line) continue;
 
-      const event: RunnerEvent = JSON.parse(line);
+      let event: RunnerEvent;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        // Skip non-JSON lines (e.g. debug output from action resolution)
+        continue;
+      }
 
       switch (event.type) {
         case "step:start":
@@ -376,7 +439,7 @@ export async function runWorkflow(
   options: OrchestratorOptions
 ): Promise<boolean> {
   const logger = options.logger ?? noopLogger;
-  const { sourceDir, jobFilter } = options;
+  const { sourceDir, jobFilter, runnerImages } = options;
 
   logger.workflowStart(workflow.name ?? "workflow");
 
@@ -533,7 +596,8 @@ export async function runWorkflow(
             matrixValues,
             sourceDir,
             logger,
-            workflow.defaults
+            workflow.defaults,
+            resolveRunnerImage(job, runnerImages)
           ),
       });
 

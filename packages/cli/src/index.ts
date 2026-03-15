@@ -1,19 +1,45 @@
 #!/usr/bin/env bun
 
+// Subcommand dispatch: "job-worker" runs the job worker, otherwise run orchestrator
+if (process.argv[2] === "job-worker") {
+  const { runJobWorker } = await import("@openrunner/runner");
+  await runJobWorker();
+  process.exit(0);
+}
+
 import {
   parseWorkflow,
   runWorkflow,
   type OrchestratorLogger,
 } from "@openrunner/runner";
 
-const workflowPath = process.argv[2];
+// Parse args: positional args and --image flags
+const positionalArgs: string[] = [];
+const runnerImages: Record<string, string> = {};
+
+for (const arg of process.argv.slice(2)) {
+  if (arg.startsWith("--image=")) {
+    // --image=ubuntu-latest=openrunner/runner:local
+    const value = arg.slice("--image=".length);
+    const eqIdx = value.indexOf("=");
+    if (eqIdx === -1) {
+      console.error(`Invalid --image flag: ${arg}. Use --image=<runs-on>=<docker-image>`);
+      process.exit(1);
+    }
+    runnerImages[value.slice(0, eqIdx)] = value.slice(eqIdx + 1);
+  } else {
+    positionalArgs.push(arg);
+  }
+}
+
+const workflowPath = positionalArgs[0];
 
 if (!workflowPath) {
-  console.error("Usage: openrunner <workflow-file> [job-name]");
+  console.error("Usage: openrunner <workflow-file> [job-name] [--image=<runs-on>=<docker-image>]");
   process.exit(1);
 }
 
-const jobFilter = process.argv[3];
+const jobFilter = positionalArgs[1];
 const cwd = process.cwd();
 
 const file = Bun.file(workflowPath);
@@ -75,6 +101,7 @@ const logger: OrchestratorLogger = {
 const success = await runWorkflow(workflow, {
   sourceDir: cwd,
   jobFilter,
+  runnerImages: Object.keys(runnerImages).length > 0 ? runnerImages : undefined,
   logger,
 });
 

@@ -101,7 +101,7 @@ export async function resolveAction(uses: string, workingDirectory: string): Pro
   }
 
   // Download tarball from GitHub
-  console.log(`\x1b[2m│   Downloading ${ref.owner}/${ref.repo}@${ref.ref}...\x1b[0m`);
+  process.stderr.write(`\x1b[2m│   Downloading ${ref.owner}/${ref.repo}@${ref.ref}...\x1b[0m\n`);
 
   const tarballUrl = `https://github.com/${ref.owner}/${ref.repo}/archive/${ref.ref}.tar.gz`;
   const response = await fetch(tarballUrl);

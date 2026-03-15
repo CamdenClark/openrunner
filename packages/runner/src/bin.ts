@@ -140,8 +140,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  emitEvent({ type: "job:result", success: false, outputs: {} });
-  process.stderr.write(String(err) + "\n");
-  process.exit(1);
-});
+export { main };
+
+// When run directly as a script (not imported), execute main()
+if (import.meta.main) {
+  main().catch((err) => {
+    emitEvent({ type: "job:result", success: false, outputs: {} });
+    process.stderr.write(String(err) + "\n");
+    process.exit(1);
+  });
+}

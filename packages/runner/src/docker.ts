@@ -3,8 +3,20 @@ import { mkdir } from "node:fs/promises";
 import type { Step } from "./parser";
 import type { NormalizedContainer, ServiceConfig } from "./parser";
 import type { Executor, StepResult, HostExecutorOptions } from "./executor";
+import {
+  resolveAction,
+  readActionMeta,
+  installActionDeps,
+} from "./actions";
 
 const CONTAINER_WORKSPACE = "/github/workspace";
+const CONTAINER_ACTIONS_CACHE = "/github/actions-cache";
+
+const HOST_ACTIONS_CACHE = join(
+  process.env.HOME ?? process.env.USERPROFILE ?? "/tmp",
+  ".openrunner",
+  "actions"
+);
 
 /**
  * Shell command templates matching GitHub Actions behavior for Docker.
@@ -122,6 +134,10 @@ export class DockerContainer {
     // Mount workspace
     args.push("-v", `${this.hostWorkspace}:${CONTAINER_WORKSPACE}`);
     args.push("-w", CONTAINER_WORKSPACE);
+
+    // Mount action cache and bun binary so uses: steps can run inside the container
+    args.push("-v", `${HOST_ACTIONS_CACHE}:${CONTAINER_ACTIONS_CACHE}:ro`);
+    args.push("-v", `${findBunBinary()}:${CONTAINER_BUN}:ro`);
 
     // Attach to network
     if (opts?.network) {
@@ -293,9 +309,7 @@ export class DockerExecutor implements Executor {
 
   async runStep(step: Step, env: Record<string, string>): Promise<StepResult> {
     if (step.uses) {
-      throw new Error(
-        `'uses' steps are not yet supported inside Docker containers. Step: ${step.uses}`
-      );
+      return this.runUsesStep(step, env);
     }
     if (!step.run) {
       throw new Error("Step must have either 'run' or 'uses'");
@@ -398,6 +412,140 @@ export class DockerExecutor implements Executor {
     // Clean up temp files
     await Promise.allSettled([
       Bun.file(hostScriptFile).delete(),
+      Bun.file(hostOutputFile).delete(),
+      Bun.file(hostEnvFile).delete(),
+      Bun.file(hostPathFile).delete(),
+    ]);
+
+    return { exitCode, stdout, stderr, outputs, envVars, pathAdditions };
+  }
+
+  /**
+   * Run a `uses:` action step inside the Docker container.
+   * Actions are resolved/downloaded on the host, then executed inside the container
+   * via `docker exec` with the mounted bun binary and action cache.
+   */
+  private async runUsesStep(
+    step: Step,
+    env: Record<string, string>
+  ): Promise<StepResult> {
+    // Resolve and download the action on the host
+    const hostActionDir = await resolveAction(step.uses!, this.hostWorkspace);
+    const meta = await readActionMeta(hostActionDir);
+
+    const using = meta.runs.using;
+    if (!using.startsWith("node") && using !== "bun") {
+      throw new Error(
+        `Unsupported action type in container: ${using}. Only JavaScript (node*/bun) actions are supported.`
+      );
+    }
+
+    const entrypoint = meta.runs.main;
+    if (!entrypoint) {
+      throw new Error(`Action ${step.uses} has no runs.main entrypoint`);
+    }
+
+    await installActionDeps(hostActionDir, entrypoint);
+
+    // Map the host action path to the container path
+    // Host: ~/.openrunner/actions/owner/repo/ref/...
+    // Container: /github/actions-cache/owner/repo/ref/...
+    const relativePath = hostActionDir.slice(HOST_ACTIONS_CACHE.length);
+    const containerActionDir = `${CONTAINER_ACTIONS_CACHE}${relativePath}`;
+    const containerEntrypoint = join(containerActionDir, entrypoint);
+
+    const containerId = this.container.getId();
+    const runnerDir = join(this.hostWorkspace, ".runner");
+    await mkdir(runnerDir, { recursive: true });
+
+    const uuid = crypto.randomUUID();
+    const outputName = `output-${uuid}`;
+    const envName = `env-${uuid}`;
+    const pathName = `path-${uuid}`;
+
+    const hostOutputFile = join(runnerDir, outputName);
+    const hostEnvFile = join(runnerDir, envName);
+    const hostPathFile = join(runnerDir, pathName);
+
+    const containerRunnerDir = `${CONTAINER_WORKSPACE}/.runner`;
+    const containerOutputFile = `${containerRunnerDir}/${outputName}`;
+    const containerEnvFile = `${containerRunnerDir}/${envName}`;
+    const containerPathFile = `${containerRunnerDir}/${pathName}`;
+
+    await Promise.all([
+      Bun.write(hostOutputFile, ""),
+      Bun.write(hostEnvFile, ""),
+      Bun.write(hostPathFile, ""),
+    ]);
+
+    // Build INPUT_ env vars from action defaults + with: overrides
+    const inputEnv: Record<string, string> = {};
+    if (meta.inputs) {
+      for (const [key, def] of Object.entries(meta.inputs)) {
+        if (def.default != null) {
+          let value = String(def.default);
+          if (this.interpolate && value.includes("${{")) {
+            value = this.interpolate(value);
+          }
+          inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] = value;
+        }
+      }
+    }
+    if (step.with) {
+      for (const [key, value] of Object.entries(step.with)) {
+        if (value == null) continue;
+        inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
+          String(value);
+      }
+    }
+
+    // Build docker exec command
+    const execArgs = ["docker", "exec"];
+
+    const cwd = step["working-directory"]
+      ? `${CONTAINER_WORKSPACE}/${step["working-directory"]}`
+      : CONTAINER_WORKSPACE;
+    execArgs.push("-w", cwd);
+
+    const stepEnv: Record<string, string> = {
+      ...env,
+      ...(step.env ?? {}),
+      ...inputEnv,
+      GITHUB_OUTPUT: containerOutputFile,
+      GITHUB_ENV: containerEnvFile,
+      GITHUB_PATH: containerPathFile,
+      GITHUB_WORKSPACE: CONTAINER_WORKSPACE,
+      GITHUB_ACTION_PATH: containerActionDir,
+    };
+
+    for (const [key, value] of Object.entries(stepEnv)) {
+      execArgs.push("-e", `${key}=${value}`);
+    }
+
+    execArgs.push(containerId);
+    execArgs.push(CONTAINER_BUN, "run", containerEntrypoint);
+
+    const proc = Bun.spawn(execArgs, {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const timeoutMs = (step["timeout-minutes"] ?? 360) * 60 * 1000;
+    const timeout = setTimeout(() => proc.kill(), timeoutMs);
+
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    const exitCode = await proc.exited;
+    clearTimeout(timeout);
+
+    const outputs = await parseFileCommands(hostOutputFile);
+    const envVars = await parseFileCommands(hostEnvFile);
+    const pathAdditions = await parsePathFile(hostPathFile);
+
+    await Promise.allSettled([
       Bun.file(hostOutputFile).delete(),
       Bun.file(hostEnvFile).delete(),
       Bun.file(hostPathFile).delete(),

@@ -20,6 +20,9 @@ export type { JobResult, OrchestratorLogger, OrchestratorOptions } from "./orche
 export { expandMatrix, expandMatrixJobs } from "./matrix";
 export type { MatrixCombination, ExpandedJob } from "./matrix";
 
+export { main as runJobWorker } from "./bin";
+export type { JobInput } from "./bin";
+
 export { runJob } from "./runner";
 export type { RunnerOptions, RunnerResult, RunnerEvent } from "./runner";
 
