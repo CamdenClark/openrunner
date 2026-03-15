@@ -11,6 +11,7 @@ import {
 } from "./context";
 import type { RunnerEvent } from "./runner";
 import type { JobInput } from "./bin";
+import { DockerNetwork, DockerService } from "./docker";
 
 /**
  * Resolve the Docker image for a job based on its runs-on label.
@@ -243,92 +244,130 @@ async function runJobSteps(
     ? { ...runnerCtx, temp: "/tmp/runner", tool_cache: "/tmp/runner/tool-cache" }
     : runnerCtx;
 
-  const jobInput: JobInput = {
-    job,
-    jobId,
-    env: effectiveEnv,
-    githubContext: githubCtx,
-    runnerContext: effectiveRunnerCtx,
-    needsContext: needsCtx,
-    matrixContext: matrixCtx,
-    workflowDefaults,
-    sourceDir: isDocker ? CONTAINER_SOURCE : sourceDir,
-  };
+  // Set up Docker network and services on the host (orchestrator-managed)
+  const servicesConfig = job.services;
+  const containerConfig = job.container;
+  const needsNetwork = !!(containerConfig || servicesConfig);
 
-  const spawnCommand = isDocker
-    ? ["docker", "run", "--rm", "-i", "-v", `${sourceDir}:${CONTAINER_SOURCE}:ro`, runnerImage!]
-    : getJobWorkerCommand();
+  let network: DockerNetwork | null = null;
+  const services: DockerService[] = [];
 
-  const proc = Bun.spawn(spawnCommand, {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  try {
+    if (needsNetwork) {
+      const networkName = `openrunner-${jobId}-${crypto.randomUUID().slice(0, 8)}`;
+      network = new DockerNetwork(networkName);
+      await network.create();
 
-  // Write JobInput to stdin and close
-  proc.stdin.write(JSON.stringify(jobInput));
-  proc.stdin.end();
-
-  // Read stderr in background (for error diagnostics)
-  const stderrPromise = new Response(proc.stderr).text();
-
-  // Read stdout line by line, parse RunnerEvents
-  let success = false;
-  let outputs: Record<string, string> = {};
-
-  const reader = proc.stdout.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let newlineIdx: number;
-    while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, newlineIdx).trim();
-      buffer = buffer.slice(newlineIdx + 1);
-      if (!line) continue;
-
-      let event: RunnerEvent;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        // Skip non-JSON lines (e.g. debug output from action resolution)
-        continue;
-      }
-
-      switch (event.type) {
-        case "step:start":
-          logger.stepStart(event.label);
-          break;
-        case "step:skipped":
-          logger.stepSkipped(event.label);
-          break;
-        case "step:output":
-          logger.stepOutput(event.stdout, event.stderr);
-          break;
-        case "step:end":
-          logger.stepEnd(event.label, event.success, event.exitCode);
-          break;
-        case "job:result":
-          success = event.success;
-          outputs = event.outputs;
-          break;
+      if (servicesConfig) {
+        for (const [name, config] of Object.entries(servicesConfig)) {
+          const service = new DockerService(name, config);
+          await service.start(network.name);
+          services.push(service);
+        }
       }
     }
+
+    const jobInput: JobInput = {
+      job,
+      jobId,
+      env: effectiveEnv,
+      githubContext: githubCtx,
+      runnerContext: effectiveRunnerCtx,
+      needsContext: needsCtx,
+      matrixContext: matrixCtx,
+      workflowDefaults,
+      sourceDir: isDocker ? CONTAINER_SOURCE : sourceDir,
+      networkName: network?.name,
+    };
+
+    const spawnCommand = isDocker
+      ? [
+          "docker", "run", "--rm", "-i",
+          "-v", `${sourceDir}:${CONTAINER_SOURCE}:ro`,
+          ...(network ? ["--network", network.name] : []),
+          runnerImage!,
+        ]
+      : getJobWorkerCommand();
+
+    const proc = Bun.spawn(spawnCommand, {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    // Write JobInput to stdin and close
+    proc.stdin.write(JSON.stringify(jobInput));
+    proc.stdin.end();
+
+    // Read stderr in background (for error diagnostics)
+    const stderrPromise = new Response(proc.stderr).text();
+
+    // Read stdout line by line, parse RunnerEvents
+    let success = false;
+    let outputs: Record<string, string> = {};
+
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let newlineIdx: number;
+      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newlineIdx).trim();
+        buffer = buffer.slice(newlineIdx + 1);
+        if (!line) continue;
+
+        let event: RunnerEvent;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          // Skip non-JSON lines (e.g. debug output from action resolution)
+          continue;
+        }
+
+        switch (event.type) {
+          case "step:start":
+            logger.stepStart(event.label);
+            break;
+          case "step:skipped":
+            logger.stepSkipped(event.label);
+            break;
+          case "step:output":
+            logger.stepOutput(event.stdout, event.stderr);
+            break;
+          case "step:end":
+            logger.stepEnd(event.label, event.success, event.exitCode);
+            break;
+          case "job:result":
+            success = event.success;
+            outputs = event.outputs;
+            break;
+        }
+      }
+    }
+
+    await proc.exited;
+    const stderrText = await stderrPromise;
+
+    // If the runner subprocess crashed without emitting a job:result, log stderr
+    if (stderrText && !success) {
+      logger.stepOutput("", stderrText);
+    }
+
+    return { success, outputs };
+  } finally {
+    // Cleanup services and network (orchestrator-managed)
+    for (const service of services) {
+      await service.stop().catch(() => {});
+    }
+    if (network) {
+      await network.remove().catch(() => {});
+    }
   }
-
-  await proc.exited;
-  const stderrText = await stderrPromise;
-
-  // If the runner subprocess crashed without emitting a job:result, log stderr
-  if (stderrText && !success) {
-    logger.stepOutput("", stderrText);
-  }
-
-  return { success, outputs };
 }
 
 /**

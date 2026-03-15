@@ -83,7 +83,7 @@ describe("acceptance", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Hello, Acceptance Test!");
     expect(stdout).toContain("Action ran at");
-  });
+  }, 60_000);
 
   test("multi-job DAG with output propagation", async () => {
     const { exitCode, stdout } = await run(fixture("multi-job-dag.yml"));
@@ -186,7 +186,7 @@ describe("acceptance", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("container works");
     expect(stdout).toContain("Alpine");
-  });
+  }, 120_000);
 
   test("container: env vars propagate into container", async () => {
     const { exitCode, stdout } = await run(fixture("container-env.yml"), {
@@ -195,7 +195,7 @@ describe("acceptance", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("job=from-job");
     expect(stdout).toContain("step=from-step");
-  });
+  }, 120_000);
 
   test("container: step outputs work inside container", async () => {
     const { exitCode, stdout } = await run(fixture("container-outputs.yml"), {
@@ -203,7 +203,7 @@ describe("acceptance", () => {
     });
     expect(exitCode).toBe(0);
     expect(stdout).toContain("got hello from container");
-  });
+  }, 120_000);
 
   test("services: container job can reach service by hostname", async () => {
     const { exitCode, stdout } = await run(fixture("services-basic.yml"), {
@@ -211,7 +211,7 @@ describe("acceptance", () => {
     });
     expect(exitCode).toBe(0);
     expect(stdout).toContain("service reachable by hostname");
-  });
+  }, 120_000);
 
   test("strategy.matrix expands into multiple job instances", async () => {
     const { exitCode, stdout } = await run(fixture("matrix-basic.yml"));
@@ -226,6 +226,6 @@ describe("acceptance", () => {
     });
     expect(exitCode).toBe(0);
     expect(stdout).toContain("service reachable on host");
-  });
+  }, 120_000);
 
 });

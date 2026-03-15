@@ -11,12 +11,20 @@ import {
 
 const CONTAINER_WORKSPACE = "/github/workspace";
 const CONTAINER_ACTIONS_CACHE = "/github/actions-cache";
+const CONTAINER_BUN = "/usr/local/bin/bun";
 
 const HOST_ACTIONS_CACHE = join(
   process.env.HOME ?? process.env.USERPROFILE ?? "/tmp",
   ".openrunner",
   "actions"
 );
+
+/**
+ * Find the bun binary path on the host for mounting into containers.
+ */
+function findBunBinary(): string {
+  return process.execPath;
+}
 
 /**
  * Shell command templates matching GitHub Actions behavior for Docker.
