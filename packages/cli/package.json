@@ -1,0 +1,15 @@
+{
+  "name": "@openrunner/cli",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "openrunner": "src/index.ts"
+  },
+  "dependencies": {
+    "@openrunner/runner": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

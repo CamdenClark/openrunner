@@ -1,0 +1,5 @@
+{
+  "name": "openrunner",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
