@@ -15,6 +15,9 @@ export { buildGitHubContext, createExpressionContext, buildGitHubEnvVars, withWo
 export { runWorkflow, buildDAG } from "./orchestrator";
 export type { JobResult, OrchestratorLogger, OrchestratorOptions } from "./orchestrator";
 
+export { runJob } from "./runner";
+export type { RunnerOptions, RunnerResult, RunnerEvent } from "./runner";
+
 export {
   parseActionRef,
   resolveAction,

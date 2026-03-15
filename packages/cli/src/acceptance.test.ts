@@ -142,4 +142,29 @@ describe("acceptance", () => {
     expect(stdout).toContain("got hello-from-env");
     expect(stdout).toContain("my-tool-output");
   });
+
+  test("job-level if: false skips job", async () => {
+    const { exitCode, stdout } = await run(fixture("job-if-skip.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("should not appear");
+    expect(stdout).toContain("this job runs");
+    expect(stdout).toContain("skipped");
+  });
+
+  test("job-level if: with github context expression", async () => {
+    const { exitCode, stdout } = await run(fixture("job-if-github-ref.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("deploy should not run");
+    expect(stdout).toContain("always runs");
+  });
+
+  test("skipped job cascades to downstream unless always()", async () => {
+    const { exitCode, stdout } = await run(
+      fixture("job-if-skip-downstream.yml")
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain("build should not run");
+    expect(stdout).not.toContain("test should not run either");
+    expect(stdout).toContain("always-test runs despite skipped dep");
+  });
 });

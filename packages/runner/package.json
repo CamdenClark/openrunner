@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "openrunner-job": "./src/bin.ts"
+  },
   "dependencies": {
     "xstate": "^5.28.0",
     "zod": "^4.3.6"

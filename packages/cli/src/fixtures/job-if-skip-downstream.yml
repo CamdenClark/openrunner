@@ -1,0 +1,19 @@
+name: job-if-skip-downstream
+on: push
+jobs:
+  build:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "build should not run"
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "test should not run either"
+  always-test:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "always-test runs despite skipped dep"

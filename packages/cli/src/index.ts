@@ -32,6 +32,9 @@ const logger: OrchestratorLogger = {
   jobStart(jobId, jobName) {
     console.log(`\x1b[36m┌ Job: ${jobName ?? jobId}\x1b[0m`);
   },
+  jobSkipped(jobId, jobName) {
+    console.log(`\x1b[33m⊘ Job: ${jobName ?? jobId} (skipped)\x1b[0m\n`);
+  },
   stepStart(stepLabel) {
     console.log(`\x1b[34m│ ▶ ${stepLabel}\x1b[0m`);
   },

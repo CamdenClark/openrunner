@@ -1,0 +1,12 @@
+name: job-if-github-ref
+on: push
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/nonexistent-branch'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "deploy should not run"
+  always-job:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "always runs"

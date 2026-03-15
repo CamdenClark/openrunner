@@ -1,0 +1,12 @@
+name: job-if-skip
+on: push
+jobs:
+  skipped:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "should not appear"
+  runs:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "this job runs"

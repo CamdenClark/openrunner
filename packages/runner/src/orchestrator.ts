@@ -1,19 +1,15 @@
 import { join } from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { createActor } from "xstate";
 import { jobMachine } from "./job-machine";
-import type { Workflow, Job, Step } from "./parser";
-import { HostExecutor } from "./executor";
-import type { StepResult } from "./executor";
+import type { Workflow, Job } from "./parser";
 import { interpolate } from "./expressions";
-import type { ExpressionContext } from "./expressions";
 import {
   buildGitHubContext,
   buildGitHubEnvVars,
   createExpressionContext,
-  withWorkspace,
 } from "./context";
+import type { RunnerEvent } from "./runner";
+import type { JobInput } from "./bin";
 
 export interface JobResult {
   jobId: string;
@@ -24,6 +20,7 @@ export interface JobResult {
 export interface OrchestratorLogger {
   workflowStart(name: string): void;
   jobStart(jobId: string, jobName?: string): void;
+  jobSkipped(jobId: string, jobName?: string): void;
   stepStart(stepLabel: string): void;
   stepSkipped(stepLabel: string): void;
   stepOutput(stdout: string, stderr: string): void;
@@ -41,6 +38,7 @@ export interface OrchestratorOptions {
 const noopLogger: OrchestratorLogger = {
   workflowStart() {},
   jobStart() {},
+  jobSkipped() {},
   stepStart() {},
   stepSkipped() {},
   stepOutput() {},
@@ -101,7 +99,8 @@ export function buildDAG(
 }
 
 /**
- * Run the step loop for a single job in an isolated workspace.
+ * Run a job by spawning the runner binary as a subprocess.
+ * Communicates via stdin/stdout NDJSON protocol.
  */
 async function runJobSteps(
   jobId: string,
@@ -114,167 +113,82 @@ async function runJobSteps(
   logger: OrchestratorLogger,
   workflowDefaults?: Workflow["defaults"]
 ): Promise<{ success: boolean; outputs: Record<string, string> }> {
-  // Create isolated temp directory
-  const parentDir = await mkdtemp(join(tmpdir(), "openrunner-job-"));
-  const workspace = join(parentDir, "workspace");
+  const jobEnv = {
+    ...githubEnvVars,
+    ...workflowEnv,
+    ...(job.env ?? {}),
+  };
 
-  try {
-    // Clone repo into workspace
-    await cloneSource(sourceDir, workspace);
+  const jobInput: JobInput = {
+    job,
+    jobId,
+    env: jobEnv,
+    githubContext: githubCtx,
+    needsContext: needsCtx,
+    workflowDefaults,
+    sourceDir,
+  };
 
-    // Override workspace in github context
-    const jobGithubCtx = withWorkspace(githubCtx, workspace);
-    const jobGithubEnvVars = {
-      ...githubEnvVars,
-      GITHUB_WORKSPACE: workspace,
-    };
+  const binPath = join(import.meta.dir, "bin.ts");
+  const proc = Bun.spawn(["bun", "run", binPath], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-    const jobEnv = {
-      ...jobGithubEnvVars,
-      ...workflowEnv,
-      ...(job.env ?? {}),
-    };
+  // Write JobInput to stdin and close
+  proc.stdin.write(JSON.stringify(jobInput));
+  proc.stdin.end();
 
-    const ctx = createExpressionContext(jobGithubCtx, jobEnv);
-    ctx.needs = needsCtx;
+  // Read stderr in background (for error diagnostics)
+  const stderrPromise = new Response(proc.stderr).text();
 
-    const executor = new HostExecutor(workspace, {
-      interpolate: (template: string) => interpolate(template, ctx),
-    });
+  // Read stdout line by line, parse RunnerEvents
+  let success = false;
+  let outputs: Record<string, string> = {};
 
-    let jobFailed = false;
-    // Accumulated GITHUB_ENV and GITHUB_PATH from steps
-    let accumulatedEnv: Record<string, string> = {};
-    let accumulatedPath: string[] = [];
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-    for (const [i, step] of job.steps.entries()) {
-      const stepLabel = step.name ?? step.id ?? `Step ${i + 1}`;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
 
-      // Evaluate if: condition (implicit `success()` when no `if:` is specified)
-      const ifExpr = step.if ?? "success()";
-      const condition = interpolate(`\${{ ${ifExpr} }}`, ctx);
-      if (condition === "false" || condition === "" || condition === "0") {
-        logger.stepSkipped(stepLabel);
-        continue;
-      }
+    let newlineIdx: number;
+    while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newlineIdx).trim();
+      buffer = buffer.slice(newlineIdx + 1);
+      if (!line) continue;
 
-      if (!step.run && !step.uses) {
-        logger.stepSkipped(stepLabel);
-        continue;
-      }
+      const event: RunnerEvent = JSON.parse(line);
 
-      logger.stepStart(stepLabel);
-
-      // Apply defaults for run: steps (step > job > workflow)
-      const expandedStep: Step = { ...step };
-      if (step.run) {
-        // Merge defaults: job-level overrides workflow-level
-        const effectiveDefaults = {
-          ...workflowDefaults?.run,
-          ...job.defaults?.run,
-        };
-        if (effectiveDefaults["working-directory"] && !step["working-directory"]) {
-          expandedStep["working-directory"] =
-            effectiveDefaults["working-directory"];
-        }
-        if (effectiveDefaults.shell && !step.shell) {
-          expandedStep.shell = effectiveDefaults.shell;
-        }
-      }
-
-      // Interpolate run command or with inputs
-      if (step.run) {
-        expandedStep.run = interpolate(step.run, ctx);
-      }
-      if (step.with) {
-        const expandedWith: Record<string, any> = {};
-        for (const [key, value] of Object.entries(step.with)) {
-          expandedWith[key] =
-            typeof value === "string" ? interpolate(value, ctx) : value;
-        }
-        expandedStep.with = expandedWith;
-      }
-
-      // Merge accumulated env/path into the step environment
-      const stepEnv = {
-        ...jobEnv,
-        ...accumulatedEnv,
-      };
-      if (accumulatedPath.length > 0) {
-        stepEnv.PATH = [
-          ...accumulatedPath,
-          stepEnv.PATH ?? process.env.PATH ?? "",
-        ].join(":");
-      }
-
-      const result = await executor.runStep(expandedStep, stepEnv);
-
-      logger.stepOutput(result.stdout, result.stderr);
-
-      // Accumulate GITHUB_ENV and GITHUB_PATH for subsequent steps
-      if (Object.keys(result.envVars).length > 0) {
-        accumulatedEnv = { ...accumulatedEnv, ...result.envVars };
-      }
-      if (result.pathAdditions.length > 0) {
-        accumulatedPath = [...result.pathAdditions, ...accumulatedPath];
-      }
-
-      // Store step outputs in context
-      const outcome = result.exitCode === 0 ? "success" : "failure";
-      if (step.id) {
-        ctx.steps[step.id] = { outputs: result.outputs, outcome };
-      }
-
-      if (result.exitCode !== 0) {
-        logger.stepEnd(stepLabel, false, result.exitCode);
-        if (!step["continue-on-error"]) {
-          jobFailed = true;
-          ctx.jobStatus = "failure";
-        }
-      } else {
-        logger.stepEnd(stepLabel, true);
+      switch (event.type) {
+        case "step:start":
+          logger.stepStart(event.label);
+          break;
+        case "step:skipped":
+          logger.stepSkipped(event.label);
+          break;
+        case "step:output":
+          logger.stepOutput(event.stdout, event.stderr);
+          break;
+        case "step:end":
+          logger.stepEnd(event.label, event.success, event.exitCode);
+          break;
+        case "job:result":
+          success = event.success;
+          outputs = event.outputs;
+          break;
       }
     }
-
-    // Resolve job outputs from job.outputs expressions
-    const jobOutputs: Record<string, string> = {};
-    if (job.outputs) {
-      for (const [key, expr] of Object.entries(job.outputs)) {
-        jobOutputs[key] = interpolate(expr, ctx);
-      }
-    }
-
-    return { success: !jobFailed, outputs: jobOutputs };
-  } finally {
-    // Clean up temp directory
-    await rm(parentDir, { recursive: true, force: true }).catch(() => {});
   }
-}
 
-/**
- * Clone or copy source into workspace.
- */
-async function cloneSource(
-  sourceDir: string,
-  workspace: string
-): Promise<void> {
-  // Try git clone --local first (fast, uses hardlinks)
-  const proc = Bun.spawn(
-    ["git", "clone", "--local", sourceDir, workspace],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  const exitCode = await proc.exited;
+  await proc.exited;
+  await stderrPromise;
 
-  if (exitCode !== 0) {
-    // Fallback to cp -a
-    const { mkdirSync } = await import("node:fs");
-    mkdirSync(workspace, { recursive: true });
-    const cp = Bun.spawn(["cp", "-a", `${sourceDir}/.`, workspace], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    await cp.exited;
-  }
+  return { success, outputs };
 }
 
 /**
@@ -318,26 +232,11 @@ export async function runWorkflow(
     const layerPromises = layer.map(async (jobId) => {
       const job = filteredJobs[jobId];
 
-      // Check if any dependency failed
       const needs = job.needs
         ? Array.isArray(job.needs)
           ? job.needs
           : [job.needs]
         : [];
-      const depFailed = needs.some(
-        (dep) => completedJobs.get(dep)?.result !== "success"
-      );
-
-      if (depFailed) {
-        logger.jobStart(jobId, job.name);
-        logger.jobEnd(jobId, false);
-        return {
-          jobId,
-          success: false,
-          outputs: {},
-          skipped: true,
-        };
-      }
 
       // Build needs context from completed jobs
       const needsCtx: Record<
@@ -349,6 +248,40 @@ export async function runWorkflow(
         if (completed) {
           needsCtx[dep] = completed;
         }
+      }
+
+      // Evaluate job-level if: condition
+      // Default is success(), which checks that all dependency jobs succeeded
+      const ifExpr = job.if ?? "success()";
+
+      // Build a lightweight expression context for job-level condition evaluation
+      // jobStatus here reflects the aggregate status of dependency jobs
+      const allDepsSucceeded = needs.every(
+        (dep) => completedJobs.get(dep)?.result === "success"
+      );
+      const anyDepFailed = needs.some(
+        (dep) => completedJobs.get(dep)?.result === "failure"
+      );
+      const depJobStatus: "success" | "failure" | "cancelled" = !allDepsSucceeded
+        ? anyDepFailed ? "failure" : "cancelled"
+        : "success";
+
+      const jobIfCtx = createExpressionContext(githubCtx, {
+        ...workflowEnv,
+        ...(job.env ?? {}),
+      });
+      jobIfCtx.needs = needsCtx;
+      jobIfCtx.jobStatus = depJobStatus;
+
+      const condition = interpolate(`\${{ ${ifExpr} }}`, jobIfCtx);
+      if (condition === "false" || condition === "" || condition === "0") {
+        logger.jobSkipped(jobId, job.name);
+        return {
+          jobId,
+          success: true,
+          outputs: {},
+          skipped: true,
+        };
       }
 
       logger.jobStart(jobId, job.name);
@@ -404,7 +337,7 @@ export async function runWorkflow(
     for (const result of layerResults) {
       completedJobs.set(result.jobId, {
         outputs: result.outputs,
-        result: result.success ? "success" : "failure",
+        result: result.skipped ? "skipped" : result.success ? "success" : "failure",
       });
       if (!result.success && !result.skipped) {
         workflowFailed = true;
