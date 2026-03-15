@@ -1,6 +1,8 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeAll, afterAll } from "bun:test";
 import { evaluateExpression, interpolate } from "./expressions";
 import type { ExpressionContext } from "./expressions";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 const ctx: ExpressionContext = {
   github: { sha: "abc123", ref: "refs/heads/main", actor: "testuser" },
@@ -87,6 +89,52 @@ test("always() returns true regardless of job status", () => {
   expect(evaluateExpression("always()", failCtx)).toBe(true);
   const cancelCtx = { ...ctx, jobStatus: "cancelled" as const };
   expect(evaluateExpression("always()", cancelCtx)).toBe(true);
+});
+
+// hashFiles tests
+const hashFilesDir = join(import.meta.dir, ".test-hashfiles-tmp");
+
+beforeAll(() => {
+  mkdirSync(join(hashFilesDir, "sub"), { recursive: true });
+  writeFileSync(join(hashFilesDir, "a.txt"), "hello");
+  writeFileSync(join(hashFilesDir, "b.txt"), "world");
+  writeFileSync(join(hashFilesDir, "sub", "c.json"), '{"key":"val"}');
+});
+
+afterAll(() => {
+  rmSync(hashFilesDir, { recursive: true, force: true });
+});
+
+test("hashFiles returns empty string when no files match", () => {
+  const c = { ...ctx, github: { ...ctx.github, workspace: hashFilesDir } };
+  expect(evaluateExpression("hashFiles('*.nope')", c)).toBe("");
+});
+
+test("hashFiles returns a hex sha256 for matching files", () => {
+  const c = { ...ctx, github: { ...ctx.github, workspace: hashFilesDir } };
+  const result = evaluateExpression("hashFiles('*.txt')", c);
+  expect(result).toMatch(/^[a-f0-9]{64}$/);
+});
+
+test("hashFiles is deterministic and sorted by path", () => {
+  const c = { ...ctx, github: { ...ctx.github, workspace: hashFilesDir } };
+  const r1 = evaluateExpression("hashFiles('*.txt')", c);
+  const r2 = evaluateExpression("hashFiles('*.txt')", c);
+  expect(r1).toBe(r2);
+});
+
+test("hashFiles supports multiple patterns", () => {
+  const c = { ...ctx, github: { ...ctx.github, workspace: hashFilesDir } };
+  const txtOnly = evaluateExpression("hashFiles('*.txt')", c);
+  const both = evaluateExpression("hashFiles('*.txt', '**/*.json')", c);
+  expect(both).toMatch(/^[a-f0-9]{64}$/);
+  expect(both).not.toBe(txtOnly);
+});
+
+test("hashFiles with ** matches files recursively", () => {
+  const c = { ...ctx, github: { ...ctx.github, workspace: hashFilesDir } };
+  const result = evaluateExpression("hashFiles('**/*')", c);
+  expect(result).toMatch(/^[a-f0-9]{64}$/);
 });
 
 test("interpolates expressions in strings", () => {

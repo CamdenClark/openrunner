@@ -157,9 +157,27 @@ function callFunction(name: string, args: any[], context: ExpressionContext): an
       return JSON.stringify(args[0]);
     case "fromJSON":
       return typeof args[0] === "string" ? JSON.parse(args[0]) : args[0];
-    case "hashFiles":
-      // Stub — would need actual file hashing
-      return "";
+    case "hashFiles": {
+      const workspace = context.github?.workspace ?? process.cwd();
+      const patterns = args.map(String);
+      const paths: string[] = [];
+      for (const pattern of patterns) {
+        const glob = new Bun.Glob(pattern);
+        for (const file of glob.scanSync({ cwd: workspace, dot: true })) {
+          paths.push(file);
+        }
+      }
+      if (paths.length === 0) return "";
+      const sorted = [...new Set(paths)].sort();
+      const hasher = new Bun.CryptoHasher("sha256");
+      for (const p of sorted) {
+        const content = require("node:fs").readFileSync(
+          require("node:path").join(workspace, p)
+        );
+        hasher.update(content);
+      }
+      return hasher.digest("hex");
+    }
     case "success":
       return context.jobStatus === "success";
     case "failure":
