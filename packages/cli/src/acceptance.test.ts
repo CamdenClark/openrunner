@@ -213,6 +213,13 @@ describe("acceptance", () => {
     expect(stdout).toContain("service reachable by hostname");
   });
 
+  test("strategy.matrix expands into multiple job instances", async () => {
+    const { exitCode, stdout } = await run(fixture("matrix-basic.yml"));
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("hello alice");
+    expect(stdout).toContain("hello bob");
+  });
+
   test("services: host job can reach service via mapped port", async () => {
     const { exitCode, stdout } = await run(fixture("services-host.yml"), {
       timeout: 120_000,

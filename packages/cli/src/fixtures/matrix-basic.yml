@@ -1,0 +1,11 @@
+name: Matrix Basic
+on: push
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        name: [alice, bob]
+    steps:
+      - name: Say hello
+        run: echo "hello ${{ matrix.name }}"

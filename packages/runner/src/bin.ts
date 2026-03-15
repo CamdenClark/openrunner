@@ -22,6 +22,7 @@ export interface JobInput {
   githubContext: Record<string, any>;
   runnerContext: Record<string, string>;
   needsContext: Record<string, { outputs: Record<string, string>; result: string }>;
+  matrixContext: Record<string, any>;
   workflowDefaults?: Workflow["defaults"];
   sourceDir: string;
 }
@@ -75,6 +76,7 @@ async function main(): Promise<void> {
 
     const ctx = createExpressionContext(jobGithubCtx, jobEnv, input.runnerContext);
     ctx.needs = input.needsContext;
+    ctx.matrix = input.matrixContext ?? {};
 
     // Set up Docker network if we need containers or services
     if (needsDocker) {

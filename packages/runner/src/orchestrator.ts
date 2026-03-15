@@ -11,6 +11,7 @@ import {
 } from "./context";
 import type { RunnerEvent } from "./runner";
 import type { JobInput } from "./bin";
+import { expandMatrixJobs, type ExpandedJob } from "./matrix";
 
 export interface JobResult {
   jobId: string;
@@ -49,35 +50,101 @@ const noopLogger: OrchestratorLogger = {
 };
 
 /**
- * Build a DAG from job `needs:` fields and return layers for parallel execution.
- * Layer 0 = no deps, layer 1 = depends only on layer 0, etc.
+ * Build a DAG from expanded jobs using original job IDs for dependency resolution.
+ * Returns layers of instance IDs for parallel execution.
  */
 export function buildDAG(
   jobs: Record<string, Job>
+): string[][];
+export function buildDAG(
+  jobs: Record<string, Job>,
+  expandedJobs?: ExpandedJob[]
 ): string[][] {
-  const jobIds = new Set(Object.keys(jobs));
-  const deps = new Map<string, string[]>();
+  // If no expanded jobs provided, use original behavior
+  if (!expandedJobs) {
+    const jobIds = new Set(Object.keys(jobs));
+    const deps = new Map<string, string[]>();
 
-  for (const [id, job] of Object.entries(jobs)) {
-    const needs = job.needs
-      ? Array.isArray(job.needs)
-        ? job.needs
-        : [job.needs]
-      : [];
-    for (const dep of needs) {
-      if (!jobIds.has(dep)) {
-        throw new Error(`Job "${id}" depends on unknown job "${dep}"`);
+    for (const [id, job] of Object.entries(jobs)) {
+      const needs = job.needs
+        ? Array.isArray(job.needs)
+          ? job.needs
+          : [job.needs]
+        : [];
+      for (const dep of needs) {
+        if (!jobIds.has(dep)) {
+          throw new Error(`Job "${id}" depends on unknown job "${dep}"`);
+        }
+      }
+      deps.set(id, needs);
+    }
+
+    const layers: string[][] = [];
+    const placed = new Set<string>();
+
+    while (placed.size < jobIds.size) {
+      const layer: string[] = [];
+      for (const id of jobIds) {
+        if (placed.has(id)) continue;
+        const jobDeps = deps.get(id)!;
+        if (jobDeps.every((d) => placed.has(d))) {
+          layer.push(id);
+        }
+      }
+      if (layer.length === 0) {
+        const remaining = [...jobIds].filter((id) => !placed.has(id));
+        throw new Error(
+          `Cycle detected in job dependencies: ${remaining.join(", ")}`
+        );
+      }
+      layers.push(layer);
+      for (const id of layer) {
+        placed.add(id);
       }
     }
-    deps.set(id, needs);
+
+    return layers;
+  }
+
+  // Expanded jobs mode: use originalJobId for dependency resolution
+  const originalJobIds = new Set(Object.keys(jobs));
+  const instanceIds = new Set(expandedJobs.map((e) => e.instanceId));
+  const deps = new Map<string, string[]>();
+
+  // Map originalJobId -> list of instanceIds
+  const originalToInstances = new Map<string, string[]>();
+  for (const ej of expandedJobs) {
+    const list = originalToInstances.get(ej.originalJobId) ?? [];
+    list.push(ej.instanceId);
+    originalToInstances.set(ej.originalJobId, list);
+  }
+
+  for (const ej of expandedJobs) {
+    const needs = ej.job.needs
+      ? Array.isArray(ej.job.needs)
+        ? ej.job.needs
+        : [ej.job.needs]
+      : [];
+    for (const dep of needs) {
+      if (!originalJobIds.has(dep)) {
+        throw new Error(
+          `Job "${ej.originalJobId}" depends on unknown job "${dep}"`
+        );
+      }
+    }
+    // Dependencies: all instances of the depended-on original job must complete
+    const allDepInstances = needs.flatMap(
+      (dep) => originalToInstances.get(dep) ?? []
+    );
+    deps.set(ej.instanceId, allDepInstances);
   }
 
   const layers: string[][] = [];
   const placed = new Set<string>();
 
-  while (placed.size < jobIds.size) {
+  while (placed.size < instanceIds.size) {
     const layer: string[] = [];
-    for (const id of jobIds) {
+    for (const id of instanceIds) {
       if (placed.has(id)) continue;
       const jobDeps = deps.get(id)!;
       if (jobDeps.every((d) => placed.has(d))) {
@@ -85,7 +152,7 @@ export function buildDAG(
       }
     }
     if (layer.length === 0) {
-      const remaining = [...jobIds].filter((id) => !placed.has(id));
+      const remaining = [...instanceIds].filter((id) => !placed.has(id));
       throw new Error(
         `Cycle detected in job dependencies: ${remaining.join(", ")}`
       );
@@ -111,6 +178,7 @@ async function runJobSteps(
   runnerCtx: Record<string, string>,
   workflowEnv: Record<string, string>,
   needsCtx: Record<string, { outputs: Record<string, string>; result: string }>,
+  matrixCtx: Record<string, any>,
   sourceDir: string,
   logger: OrchestratorLogger,
   workflowDefaults?: Workflow["defaults"]
@@ -128,6 +196,7 @@ async function runJobSteps(
     githubContext: githubCtx,
     runnerContext: runnerCtx,
     needsContext: needsCtx,
+    matrixContext: matrixCtx,
     workflowDefaults,
     sourceDir,
   };
@@ -195,6 +264,106 @@ async function runJobSteps(
 }
 
 /**
+ * Run a batch of matrix instances with max-parallel limiting.
+ * Returns results for all instances. If fail-fast is true, cancels remaining on first failure.
+ */
+async function runMatrixBatch(
+  instances: ExpandedJob[],
+  maxParallel: number | undefined,
+  failFast: boolean,
+  runInstance: (ej: ExpandedJob) => Promise<{
+    instanceId: string;
+    success: boolean;
+    outputs: Record<string, string>;
+    skipped: boolean;
+  }>
+): Promise<
+  Array<{
+    instanceId: string;
+    success: boolean;
+    outputs: Record<string, string>;
+    skipped: boolean;
+  }>
+> {
+  if (!maxParallel || maxParallel >= instances.length) {
+    // No limiting needed — run all in parallel with fail-fast support
+    if (!failFast) {
+      return Promise.all(instances.map(runInstance));
+    }
+
+    let cancelled = false;
+    const results = await Promise.all(
+      instances.map(async (ej) => {
+        if (cancelled) {
+          return {
+            instanceId: ej.instanceId,
+            success: false,
+            outputs: {},
+            skipped: true,
+          };
+        }
+        const result = await runInstance(ej);
+        if (!result.success && !result.skipped) {
+          cancelled = true;
+        }
+        return result;
+      })
+    );
+    return results;
+  }
+
+  // max-parallel limiting with semaphore
+  const results: Array<{
+    instanceId: string;
+    success: boolean;
+    outputs: Record<string, string>;
+    skipped: boolean;
+  }> = [];
+  let cancelled = false;
+  let running = 0;
+  let nextIdx = 0;
+
+  return new Promise((resolve) => {
+    const tryStartNext = () => {
+      while (running < maxParallel && nextIdx < instances.length) {
+        if (cancelled && failFast) {
+          // Skip remaining
+          for (let i = nextIdx; i < instances.length; i++) {
+            results.push({
+              instanceId: instances[i].instanceId,
+              success: false,
+              outputs: {},
+              skipped: true,
+            });
+          }
+          nextIdx = instances.length;
+          if (running === 0) resolve(results);
+          return;
+        }
+
+        const ej = instances[nextIdx++];
+        running++;
+
+        runInstance(ej).then((result) => {
+          running--;
+          results.push(result);
+          if (!result.success && !result.skipped) {
+            cancelled = true;
+          }
+          if (nextIdx >= instances.length && running === 0) {
+            resolve(results);
+          } else {
+            tryStartNext();
+          }
+        });
+      }
+    };
+
+    tryStartNext();
+  });
+}
+
+/**
  * Main entry point: run an entire workflow with DAG-based parallel execution.
  */
 export async function runWorkflow(
@@ -224,10 +393,20 @@ export async function runWorkflow(
     }
   }
 
-  // Build DAG layers
-  const layers = buildDAG(filteredJobs);
+  // Expand matrix jobs into individual instances
+  const expandedJobs = expandMatrixJobs(filteredJobs);
+
+  // Build a lookup from instanceId -> ExpandedJob
+  const expandedLookup = new Map<string, ExpandedJob>();
+  for (const ej of expandedJobs) {
+    expandedLookup.set(ej.instanceId, ej);
+  }
+
+  // Build DAG layers using expanded jobs
+  const layers = buildDAG(filteredJobs, expandedJobs);
 
   // Track completed job results for needs context
+  // Keys are both instanceId and originalJobId (for needs resolution)
   const completedJobs = new Map<
     string,
     { outputs: Record<string, string>; result: string }
@@ -236,9 +415,23 @@ export async function runWorkflow(
   let workflowFailed = false;
 
   for (const layer of layers) {
-    // Run all jobs in this layer in parallel
-    const layerPromises = layer.map(async (jobId) => {
-      const job = filteredJobs[jobId];
+    // Group layer instances by originalJobId for matrix batch handling
+    const matrixGroups = new Map<string, ExpandedJob[]>();
+    const nonMatrixInstances: ExpandedJob[] = [];
+
+    for (const instanceId of layer) {
+      const ej = expandedLookup.get(instanceId)!;
+      if (Object.keys(ej.matrixValues).length === 0) {
+        nonMatrixInstances.push(ej);
+      } else {
+        const group = matrixGroups.get(ej.originalJobId) ?? [];
+        group.push(ej);
+        matrixGroups.set(ej.originalJobId, group);
+      }
+    }
+
+    const runSingleInstance = async (ej: ExpandedJob) => {
+      const { instanceId, job, matrixValues } = ej;
 
       const needs = job.needs
         ? Array.isArray(job.needs)
@@ -246,7 +439,7 @@ export async function runWorkflow(
           : [job.needs]
         : [];
 
-      // Build needs context from completed jobs
+      // Build needs context — use originalJobId for lookup
       const needsCtx: Record<
         string,
         { outputs: Record<string, string>; result: string }
@@ -259,11 +452,8 @@ export async function runWorkflow(
       }
 
       // Evaluate job-level if: condition
-      // Default is success(), which checks that all dependency jobs succeeded
       const ifExpr = job.if ?? "success()";
 
-      // Build a lightweight expression context for job-level condition evaluation
-      // jobStatus here reflects the aggregate status of dependency jobs
       const allDepsSucceeded = needs.every(
         (dep) => completedJobs.get(dep)?.result === "success"
       );
@@ -271,35 +461,41 @@ export async function runWorkflow(
         (dep) => completedJobs.get(dep)?.result === "failure"
       );
       const depJobStatus: "success" | "failure" | "cancelled" = !allDepsSucceeded
-        ? anyDepFailed ? "failure" : "cancelled"
+        ? anyDepFailed
+          ? "failure"
+          : "cancelled"
         : "success";
 
-      const jobIfCtx = createExpressionContext(githubCtx, {
-        ...workflowEnv,
-        ...(job.env ?? {}),
-      }, runnerCtx);
+      const jobIfCtx = createExpressionContext(
+        githubCtx,
+        {
+          ...workflowEnv,
+          ...(job.env ?? {}),
+        },
+        runnerCtx
+      );
       jobIfCtx.needs = needsCtx;
+      jobIfCtx.matrix = matrixValues;
       jobIfCtx.jobStatus = depJobStatus;
 
       const condition = interpolate(`\${{ ${ifExpr} }}`, jobIfCtx);
       if (condition === "false" || condition === "" || condition === "0") {
-        logger.jobSkipped(jobId, job.name);
+        logger.jobSkipped(instanceId, job.name);
         return {
-          jobId,
+          instanceId,
           success: true,
           outputs: {},
           skipped: true,
         };
       }
 
-      logger.jobStart(jobId, job.name);
+      logger.jobStart(instanceId, job.name);
 
       // Create XState actor for job lifecycle
       const actor = createActor(jobMachine, {
-        input: { jobId },
+        input: { jobId: instanceId },
       });
 
-      // Subscribe before starting to avoid missing terminal state
       const resultPromise = new Promise<{
         success: boolean;
         outputs: Record<string, string>;
@@ -320,13 +516,14 @@ export async function runWorkflow(
         type: "START",
         run: () =>
           runJobSteps(
-            jobId,
+            instanceId,
             job,
             githubCtx,
             githubEnvVars,
             runnerCtx,
             workflowEnv,
             needsCtx,
+            matrixValues,
             sourceDir,
             logger,
             workflow.defaults
@@ -336,18 +533,74 @@ export async function runWorkflow(
       const result = await resultPromise;
       actor.stop();
 
-      logger.jobEnd(jobId, result.success);
+      logger.jobEnd(instanceId, result.success);
 
-      return { jobId, ...result, skipped: false };
-    });
+      return { instanceId, ...result, skipped: false };
+    };
 
-    const layerResults = await Promise.all(layerPromises);
+    // Run all groups and non-matrix instances in parallel
+    const allPromises: Promise<
+      Array<{
+        instanceId: string;
+        success: boolean;
+        outputs: Record<string, string>;
+        skipped: boolean;
+      }>
+    >[] = [];
 
-    for (const result of layerResults) {
-      completedJobs.set(result.jobId, {
+    // Non-matrix instances run directly in parallel
+    if (nonMatrixInstances.length > 0) {
+      allPromises.push(
+        Promise.all(nonMatrixInstances.map(runSingleInstance))
+      );
+    }
+
+    // Matrix groups use batch runner with fail-fast/max-parallel
+    for (const [, group] of matrixGroups) {
+      const failFast = group[0].failFast;
+      const maxParallel = group[0].maxParallel;
+      allPromises.push(
+        runMatrixBatch(group, maxParallel, failFast, runSingleInstance)
+      );
+    }
+
+    const allResults = (await Promise.all(allPromises)).flat();
+
+    for (const result of allResults) {
+      const ej = expandedLookup.get(result.instanceId)!;
+
+      completedJobs.set(result.instanceId, {
         outputs: result.outputs,
-        result: result.skipped ? "skipped" : result.success ? "success" : "failure",
+        result: result.skipped
+          ? "skipped"
+          : result.success
+            ? "success"
+            : "failure",
       });
+
+      // Also store under originalJobId for needs context resolution.
+      // If multiple instances share the same originalJobId, the aggregate result
+      // is failure if any instance failed.
+      const existing = completedJobs.get(ej.originalJobId);
+      if (!existing) {
+        completedJobs.set(ej.originalJobId, {
+          outputs: result.outputs,
+          result: result.skipped
+            ? "skipped"
+            : result.success
+              ? "success"
+              : "failure",
+        });
+      } else {
+        // Aggregate: failure trumps success
+        if (!result.skipped && !result.success) {
+          completedJobs.set(ej.originalJobId, {
+            outputs: existing.outputs,
+            result: "failure",
+          });
+        }
+      }
+
       if (!result.success && !result.skipped) {
         workflowFailed = true;
       }

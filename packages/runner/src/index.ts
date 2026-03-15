@@ -17,6 +17,9 @@ export { buildGitHubContext, createExpressionContext, buildGitHubEnvVars, withWo
 export { runWorkflow, buildDAG } from "./orchestrator";
 export type { JobResult, OrchestratorLogger, OrchestratorOptions } from "./orchestrator";
 
+export { expandMatrix, expandMatrixJobs } from "./matrix";
+export type { MatrixCombination, ExpandedJob } from "./matrix";
+
 export { runJob } from "./runner";
 export type { RunnerOptions, RunnerResult, RunnerEvent } from "./runner";
 
