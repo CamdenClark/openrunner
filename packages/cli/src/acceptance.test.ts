@@ -127,6 +127,15 @@ describe("acceptance", () => {
     expect(stdout).toContain("step override bash");
   });
 
+  test("failure() and always() handlers run after step failure", async () => {
+    const { exitCode, stdout } = await run(fixture("failure-handler.yml"));
+    expect(exitCode).toBe(1);
+    expect(stdout).toContain("still running");
+    expect(stdout).not.toContain("should not see this");
+    expect(stdout).toContain("failure handler ran");
+    expect(stdout).toContain("always handler ran");
+  });
+
   test("GITHUB_ENV and GITHUB_PATH propagate between steps", async () => {
     const { exitCode, stdout } = await run(fixture("github-env-path.yml"));
     expect(exitCode).toBe(0);

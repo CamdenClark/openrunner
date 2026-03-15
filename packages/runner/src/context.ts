@@ -97,6 +97,7 @@ export function createExpressionContext(
     needs: {},
     inputs: {},
     vars: {},
+    jobStatus: "success",
   };
 }
 

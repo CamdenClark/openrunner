@@ -150,13 +150,12 @@ async function runJobSteps(
     for (const [i, step] of job.steps.entries()) {
       const stepLabel = step.name ?? step.id ?? `Step ${i + 1}`;
 
-      // Evaluate if: condition
-      if (step.if) {
-        const condition = interpolate(`\${{ ${step.if} }}`, ctx);
-        if (condition === "false" || condition === "" || condition === "0") {
-          logger.stepSkipped(stepLabel);
-          continue;
-        }
+      // Evaluate if: condition (implicit `success()` when no `if:` is specified)
+      const ifExpr = step.if ?? "success()";
+      const condition = interpolate(`\${{ ${ifExpr} }}`, ctx);
+      if (condition === "false" || condition === "" || condition === "0") {
+        logger.stepSkipped(stepLabel);
+        continue;
       }
 
       if (!step.run && !step.uses) {
@@ -226,13 +225,15 @@ async function runJobSteps(
         ctx.steps[step.id] = { outputs: result.outputs, outcome };
       }
 
-      if (result.exitCode !== 0 && !step["continue-on-error"]) {
+      if (result.exitCode !== 0) {
         logger.stepEnd(stepLabel, false, result.exitCode);
-        jobFailed = true;
-        break;
+        if (!step["continue-on-error"]) {
+          jobFailed = true;
+          ctx.jobStatus = "failure";
+        }
+      } else {
+        logger.stepEnd(stepLabel, true);
       }
-
-      logger.stepEnd(stepLabel, true);
     }
 
     // Resolve job outputs from job.outputs expressions

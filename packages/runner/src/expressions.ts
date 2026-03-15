@@ -12,6 +12,7 @@ export interface ExpressionContext {
   needs: Record<string, { outputs: Record<string, string>; result: string }>;
   inputs: Record<string, any>;
   vars: Record<string, string>;
+  jobStatus: "success" | "failure" | "cancelled";
 }
 
 /**
@@ -92,7 +93,7 @@ export function evaluateExpression(
   if (funcMatch) {
     const [, funcName, argsStr] = funcMatch;
     const args = parseArgs(argsStr!, context);
-    return callFunction(funcName!, args);
+    return callFunction(funcName!, args, context);
   }
 
   // Context reference (e.g. github.sha, steps.build.outputs.result)
@@ -122,7 +123,7 @@ function parseArgs(argsStr: string, context: ExpressionContext): any[] {
   return args;
 }
 
-function callFunction(name: string, args: any[]): any {
+function callFunction(name: string, args: any[], context: ExpressionContext): any {
   switch (name) {
     case "contains":
       if (Array.isArray(args[0]))
@@ -160,11 +161,11 @@ function callFunction(name: string, args: any[]): any {
       // Stub — would need actual file hashing
       return "";
     case "success":
-      return true;
+      return context.jobStatus === "success";
     case "failure":
-      return false;
+      return context.jobStatus === "failure";
     case "cancelled":
-      return false;
+      return context.jobStatus === "cancelled";
     case "always":
       return true;
     default:

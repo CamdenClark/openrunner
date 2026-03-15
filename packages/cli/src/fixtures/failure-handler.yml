@@ -1,0 +1,21 @@
+name: Failure Handler
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Failing step
+        run: exit 1
+        continue-on-error: true
+      - name: Should still run
+        run: echo "still running"
+      - name: Force failure
+        run: exit 1
+      - name: Skipped on failure
+        run: echo "should not see this"
+      - name: Runs on failure
+        if: failure()
+        run: echo "failure handler ran"
+      - name: Runs always
+        if: always()
+        run: echo "always handler ran"

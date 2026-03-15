@@ -12,6 +12,7 @@ const ctx: ExpressionContext = {
   needs: {},
   inputs: {},
   vars: {},
+  jobStatus: "success",
 };
 
 test("resolves context references", () => {
@@ -51,6 +52,41 @@ test("evaluates built-in functions", () => {
   expect(evaluateExpression("format('Hello {0}!', 'world')", ctx)).toBe(
     "Hello world!"
   );
+});
+
+test("success() returns true when job status is success", () => {
+  expect(evaluateExpression("success()", ctx)).toBe(true);
+});
+
+test("success() returns false when job status is failure", () => {
+  const failCtx = { ...ctx, jobStatus: "failure" as const };
+  expect(evaluateExpression("success()", failCtx)).toBe(false);
+});
+
+test("failure() returns false when job status is success", () => {
+  expect(evaluateExpression("failure()", ctx)).toBe(false);
+});
+
+test("failure() returns true when job status is failure", () => {
+  const failCtx = { ...ctx, jobStatus: "failure" as const };
+  expect(evaluateExpression("failure()", failCtx)).toBe(true);
+});
+
+test("cancelled() returns false when job status is success", () => {
+  expect(evaluateExpression("cancelled()", ctx)).toBe(false);
+});
+
+test("cancelled() returns true when job status is cancelled", () => {
+  const cancelCtx = { ...ctx, jobStatus: "cancelled" as const };
+  expect(evaluateExpression("cancelled()", cancelCtx)).toBe(true);
+});
+
+test("always() returns true regardless of job status", () => {
+  expect(evaluateExpression("always()", ctx)).toBe(true);
+  const failCtx = { ...ctx, jobStatus: "failure" as const };
+  expect(evaluateExpression("always()", failCtx)).toBe(true);
+  const cancelCtx = { ...ctx, jobStatus: "cancelled" as const };
+  expect(evaluateExpression("always()", cancelCtx)).toBe(true);
 });
 
 test("interpolates expressions in strings", () => {
