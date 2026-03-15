@@ -241,7 +241,7 @@ export class HostExecutor implements Executor {
     const inputEnv: Record<string, string> = {};
     if (meta.inputs) {
       for (const [key, def] of Object.entries(meta.inputs)) {
-        if (def.default !== undefined) {
+        if (def.default != null) {
           let value = String(def.default);
           // Interpolate ${{ }} expressions in action input defaults
           if (this.interpolate && value.includes("${{")) {
@@ -253,6 +253,7 @@ export class HostExecutor implements Executor {
     }
     if (step.with) {
       for (const [key, value] of Object.entries(step.with)) {
+        if (value == null) continue;
         inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
           String(value);
       }
@@ -357,7 +358,7 @@ export class HostExecutor implements Executor {
     const inputEnv: Record<string, string> = {};
     if (meta.inputs) {
       for (const [key, def] of Object.entries(meta.inputs)) {
-        if (def.default !== undefined) {
+        if (def.default != null) {
           let value = String(def.default);
           if (this.interpolate && value.includes("${{")) {
             value = this.interpolate(value);
@@ -368,6 +369,7 @@ export class HostExecutor implements Executor {
     }
     if (step.with) {
       for (const [key, value] of Object.entries(step.with)) {
+        if (value == null) continue;
         inputEnv[`INPUT_${key.toUpperCase().replace(/ /g, "_")}`] =
           String(value);
       }

@@ -60,7 +60,9 @@ export function evaluateExpression(
   }
 
   // Binary operators
-  for (const op of ["==", "!=", "&&", "||", ">=", "<=", ">", "<"]) {
+  // Check operators in reverse precedence order (lowest-precedence first)
+  // so lower-precedence operators bind more loosely (become the root of the AST).
+  for (const op of ["||", "&&", "==", "!=", ">=", "<=", ">", "<"]) {
     const idx = expr.indexOf(` ${op} `);
     if (idx !== -1) {
       const left = evaluateExpression(expr.slice(0, idx).trim(), context);

@@ -102,7 +102,18 @@ export async function runJob(options: RunnerOptions): Promise<RunnerResult> {
       ].join(":");
     }
 
-    const result = await executor.runStep(expandedStep, stepEnv);
+    let result;
+    try {
+      result = await executor.runStep(expandedStep, stepEnv);
+    } catch (err) {
+      emitEvent({ type: "step:output", stdout: "", stderr: String(err) });
+      emitEvent({ type: "step:end", label: stepLabel, success: false, exitCode: 1 });
+      if (!step["continue-on-error"]) {
+        jobFailed = true;
+        ctx.jobStatus = "failure";
+      }
+      continue;
+    }
 
     emitEvent({ type: "step:output", stdout: result.stdout, stderr: result.stderr });
 
