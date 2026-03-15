@@ -258,7 +258,12 @@ async function runJobSteps(
   }
 
   await proc.exited;
-  await stderrPromise;
+  const stderrText = await stderrPromise;
+
+  // If the runner subprocess crashed without emitting a job:result, log stderr
+  if (stderrText && !success) {
+    logger.stepOutput("", stderrText);
+  }
 
   return { success, outputs };
 }
@@ -480,7 +485,8 @@ export async function runWorkflow(
 
       const condition = interpolate(`\${{ ${ifExpr} }}`, jobIfCtx);
       if (condition === "false" || condition === "" || condition === "0") {
-        logger.jobSkipped(instanceId, job.name);
+        const skippedDisplayName = job.name ? interpolate(job.name, jobIfCtx) : undefined;
+        logger.jobSkipped(instanceId, skippedDisplayName);
         return {
           instanceId,
           success: true,
@@ -489,7 +495,8 @@ export async function runWorkflow(
         };
       }
 
-      logger.jobStart(instanceId, job.name);
+      const displayName = job.name ? interpolate(job.name, jobIfCtx) : undefined;
+      logger.jobStart(instanceId, displayName);
 
       // Create XState actor for job lifecycle
       const actor = createActor(jobMachine, {

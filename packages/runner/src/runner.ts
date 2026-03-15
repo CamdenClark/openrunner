@@ -44,7 +44,8 @@ export async function runJob(options: RunnerOptions): Promise<RunnerResult> {
   let accumulatedPath: string[] = [];
 
   for (const [i, step] of job.steps.entries()) {
-    const stepLabel = step.name ?? step.id ?? `Step ${i + 1}`;
+    const rawLabel = step.name ?? step.id ?? `Step ${i + 1}`;
+    const stepLabel = rawLabel.includes("${{") ? interpolate(rawLabel, ctx) : rawLabel;
 
     // Evaluate if: condition (implicit `success()` when no `if:` is specified)
     const ifExpr = step.if ?? "success()";
@@ -75,6 +76,11 @@ export async function runJob(options: RunnerOptions): Promise<RunnerResult> {
       if (effectiveDefaults.shell && !step.shell) {
         expandedStep.shell = effectiveDefaults.shell;
       }
+    }
+
+    // Interpolate working-directory
+    if (expandedStep["working-directory"]) {
+      expandedStep["working-directory"] = interpolate(expandedStep["working-directory"], ctx);
     }
 
     // Interpolate run command or with inputs

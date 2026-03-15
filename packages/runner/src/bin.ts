@@ -69,14 +69,23 @@ async function main(): Promise<void> {
     await cloneSource(input.sourceDir, workspace);
 
     const jobGithubCtx = withWorkspace(input.githubContext, workspace);
-    const jobEnv = {
+    const rawJobEnv = {
       ...input.env,
       GITHUB_WORKSPACE: workspace,
     };
 
-    const ctx = createExpressionContext(jobGithubCtx, jobEnv, input.runnerContext);
+    // Build context first with raw env, then interpolate env values
+    const ctx = createExpressionContext(jobGithubCtx, rawJobEnv, input.runnerContext);
     ctx.needs = input.needsContext;
     ctx.matrix = input.matrixContext ?? {};
+
+    // Interpolate ${{ }} expressions in env values (e.g. GOPATH: ${{ github.workspace }})
+    const jobEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawJobEnv)) {
+      jobEnv[key] = value.includes("${{") ? interpolate(value, ctx) : value;
+    }
+    // Update the expression context env with interpolated values
+    ctx.env = jobEnv;
 
     // Set up Docker network if we need containers or services
     if (needsDocker) {

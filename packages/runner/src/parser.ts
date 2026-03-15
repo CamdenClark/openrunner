@@ -1,6 +1,8 @@
 import { z } from "zod/v4";
 
 const stringOrBool = z.union([z.string(), z.boolean()]).transform(v => String(v));
+const coercedString = z.union([z.string(), z.number(), z.boolean()]).transform(v => String(v));
+const envRecord = z.record(z.string(), coercedString).optional();
 
 const StepSchema = z.object({
   name: z.string().optional(),
@@ -9,7 +11,7 @@ const StepSchema = z.object({
   run: z.string().optional(),
   uses: z.string().optional(),
   with: z.record(z.string(), z.any()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
+  env: envRecord,
   "continue-on-error": z.boolean().optional(),
   "timeout-minutes": z.number().optional(),
   "working-directory": z.string().optional(),
@@ -44,7 +46,7 @@ const ContainerSchema = z.union([
       username: z.string(),
       password: z.string(),
     }).optional(),
-    env: z.record(z.string(), z.string()).optional(),
+    env: envRecord,
     ports: z.array(z.union([z.string(), z.number()])).optional(),
     volumes: z.array(z.string()).optional(),
     options: z.string().optional(),
@@ -57,7 +59,7 @@ const ServiceSchema = z.object({
     username: z.string(),
     password: z.string(),
   }).optional(),
-  env: z.record(z.string(), z.string()).optional(),
+  env: envRecord,
   ports: z.array(z.union([z.string(), z.number()])).optional(),
   volumes: z.array(z.string()).optional(),
   options: z.string().optional(),
@@ -68,7 +70,7 @@ const JobSchema = z.object({
   "runs-on": z.union([z.string(), z.array(z.string())]).optional(),
   needs: z.union([z.string(), z.array(z.string())]).optional(),
   if: stringOrBool.optional(),
-  env: z.record(z.string(), z.string()).optional(),
+  env: envRecord,
   defaults: DefaultsSchema.optional(),
   container: ContainerSchema.optional(),
   services: z.record(z.string(), ServiceSchema).optional(),
@@ -81,7 +83,7 @@ const JobSchema = z.object({
 const WorkflowSchema = z.object({
   name: z.string().optional(),
   on: z.any().optional(),
-  env: z.record(z.string(), z.string()).optional(),
+  env: envRecord,
   defaults: DefaultsSchema.optional(),
   jobs: z.record(z.string(), JobSchema),
 });
